@@ -1,0 +1,20 @@
+{
+  "commonmark": {
+    "version": "0.31.2",
+    "source": "https://spec.commonmark.org/0.31.2/spec.json",
+    "path": "commonmark/0.31.2/spec.json",
+    "sha256": "d431b29d97b6f73e69d547109cf5081578fac931e72afe95639ebe766c1b2a20",
+    "examples": 652,
+    "license": "CC-BY-SA-4.0"
+  },
+  "gfm": {
+    "version": "0.29.0.gfm.13",
+    "source": "https://raw.githubusercontent.com/github/cmark-gfm/0.29.0.gfm.13/test/extensions.txt",
+    "path": "gfm/0.29.0.gfm.13/extensions.txt",
+    "sha256": "a2a45e98be9fca95f564f927265a0f63beea6cae5369d1cf4bde44caa51b2a3a",
+    "examples": 30,
+    "expectedRenderFailures": [],
+    "ignoredRenderExamples": [20],
+    "license": "CC-BY-SA-4.0"
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "name": "markspan",
+  "version": "0.1.0",
+  "description": "Zero-dependency CommonMark and GFM parser with source-exact syntax trees and incremental updates.",
+  "keywords": [
+    "markdown",
+    "commonmark",
+    "gfm",
+    "parser",
+    "ast",
+    "typescript",
+    "editor",
+    "incremental",
+    "source-map",
+    "zero-dependency"
+  ],
+  "license": "MIT",
+  "author": "Ismail El Korchi",
+  "homepage": "https://github.com/Ismail-elkorchi/markspan#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ismail-elkorchi/markspan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ismail-elkorchi/markspan/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "packageManager": "npm@12.0.2",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=11.0.0"
+  },
+  "main": "./dist/mod.js",
+  "types": "./dist/mod.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/mod.d.ts",
+      "import": "./dist/mod.js"
+    },
+    "./model": {
+      "types": "./dist/model.d.ts",
+      "import": "./dist/model.js"
+    },
+    "./source": {
+      "types": "./dist/source.d.ts",
+      "import": "./dist/source.js"
+    },
+    "./analysis": {
+      "types": "./dist/analysis.d.ts",
+      "import": "./dist/analysis.js"
+    },
+    "./edit": {
+      "types": "./dist/edit.d.ts",
+      "import": "./dist/edit.js"
+    },
+    "./syntax": {
+      "types": "./dist/syntax.d.ts",
+      "import": "./dist/syntax.js"
+    },
+    "./tree-index": {
+      "types": "./dist/tree-index.d.ts",
+      "import": "./dist/tree-index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "docs/**/*.md",
+    "fixtures/**/*"
+  ],
+  "scripts": {
+    "clean": "node scripts-clean.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "test": "npm run build && node --test test/analysis-edit.test.mjs test/invariants.test.mjs test/parser.test.mjs test/resources.test.mjs",
+    "test:conformance": "npm run build && node scripts/run-conformance.mjs --check",
+    "test:fuzz": "npm run build && node --test test/fuzz.test.mjs",
+    "test:browser": "npm run build && node scripts/test-browser.mjs",
+    "test:deno": "npm run build && deno run --allow-read scripts/test-deno.ts",
+    "test:bun": "npm run build && bun scripts/test-bun.mjs",
+    "test:types": "tsc --noEmit -p tsconfig.type-tests.json",
+    "test:jsr": "jsr publish --dry-run",
+    "benchmark": "npm run build && node benchmark/pathological.mjs",
+    "test:release": "npm run build && node scripts/verify-release.mjs",
+    "check": "npm run typecheck && npm test && npm run test:fuzz && npm run test:types && npm run test:conformance && npm run test:jsr && node scripts-check-package.mjs",
+    "publish:jsr": "jsr publish",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "esbuild": "0.28.2",
+    "fast-check": "4.9.0",
+    "jsr": "0.14.3",
+    "playwright": "1.62.1",
+    "typescript": "7.0.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

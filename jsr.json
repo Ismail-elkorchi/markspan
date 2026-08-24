@@ -1,0 +1,24 @@
+{
+  "$schema": "https://jsr.io/schema/config-file.v1.json",
+  "name": "@ismail-elkorchi/markspan",
+  "version": "0.1.0",
+  "exports": {
+    ".": "./src/mod.ts",
+    "./model": "./src/model.ts",
+    "./source": "./src/source.ts",
+    "./analysis": "./src/analysis.ts",
+    "./edit": "./src/edit.ts",
+    "./syntax": "./src/syntax.ts",
+    "./tree-index": "./src/tree-index.ts"
+  },
+  "publish": {
+    "include": [
+      "src/**/*.ts",
+      "README.md",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "docs/**/*.md",
+      "fixtures/**/*"
+    ]
+  }
+}

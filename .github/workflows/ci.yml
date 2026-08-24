@@ -1,0 +1,71 @@
+name: Markspan CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm install --global npm@12.0.2
+      - run: npm ci
+      - run: npm run check
+      - if: matrix.node == 26
+        run: npm run test:release
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm install --global npm@12.0.2
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+
+  deno:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: npm install --global npm@12.0.2
+      - run: npm ci
+      - run: npm run test:deno
+
+  bun:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: npm install --global npm@12.0.2
+      - run: npm ci
+      - run: npm run test:bun
