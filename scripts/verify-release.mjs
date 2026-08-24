@@ -19,7 +19,9 @@ async function pack(destination) {
     '--pack-destination',
     destination
   ], { cwd: new URL('../', import.meta.url) });
-  const result = JSON.parse(stdout)[0];
+  const report = JSON.parse(stdout);
+  assert.deepEqual(Object.keys(report), ['markspan']);
+  const result = report.markspan;
   assert(result?.filename);
   assert.equal(result.name, 'markspan');
   return {
