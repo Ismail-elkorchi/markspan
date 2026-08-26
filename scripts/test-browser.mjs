@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 
@@ -9,7 +10,7 @@ const directory = await mkdtemp(join(tmpdir(), 'markspan-browser-'));
 const bundle = join(directory, 'test.js');
 try {
   await build({
-    entryPoints: [new URL('./browser-entry.mjs', import.meta.url).pathname],
+    entryPoints: [fileURLToPath(new URL('./browser-entry.mjs', import.meta.url))],
     outfile: bundle,
     bundle: true,
     format: 'iife',
