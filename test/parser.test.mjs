@@ -149,3 +149,61 @@ test('returns deeply immutable public values', () => {
     assert.equal(Object.isFrozen(node.children), true);
   }
 });
+
+test('parses explicit front matter, callout, and math extensions with exact spans', () => {
+  const source = [
+    '---',
+    'title: Demo',
+    'unsafe: !constructor value',
+    'invalid line',
+    '---',
+    '',
+    '> [!WARNING]',
+    '> Body with $x^2$ and \\$literal$.',
+    '',
+    '$$',
+    'y = x + 1',
+    '$$'
+  ].join('\n');
+  const parsed = parseMarkdown(source, {
+    dialect: 'gfm',
+    extensions: ['frontMatter', 'callouts', 'math']
+  });
+  const [frontMatter, callout, mathBlock] = parsed.tree.children;
+
+  assert.equal(frontMatter?.kind, 'frontMatter');
+  assert.equal(frontMatter?.raw, 'title: Demo\nunsafe: !constructor value\ninvalid line\n');
+  assert.deepEqual(frontMatter?.entries.map((entry) => [
+    entry.key,
+    entry.value,
+    source.slice(entry.keySpan.start, entry.keySpan.end),
+    source.slice(entry.valueSpan.start, entry.valueSpan.end)
+  ]), [
+    ['title', 'Demo', 'title', 'Demo'],
+    ['unsafe', '!constructor value', 'unsafe', '!constructor value']
+  ]);
+  assert.equal(callout?.kind, 'callout');
+  assert.equal(callout?.calloutKind, 'warning');
+  assert.equal(callout?.children[0]?.kind, 'paragraph');
+  if (callout?.children[0]?.kind === 'paragraph') {
+    assert.deepEqual(callout.children[0].children.map((node) => node.kind), [
+      'text', 'mathInline', 'text', 'escape', 'text'
+    ]);
+  }
+  assert.equal(mathBlock?.kind, 'mathBlock');
+  assert.equal(mathBlock?.value, 'y = x + 1\n');
+  assert(parsed.diagnostics.some((diagnostic) => diagnostic.code === 'invalid-front-matter'));
+  assert.equal(source.slice(mathBlock?.contentSpan.start, mathBlock?.contentSpan.end), 'y = x + 1\n');
+});
+
+test('unknown callouts remain block quotes and unclosed extension blocks report diagnostics', () => {
+  const unknown = parseMarkdown('> [!UNKNOWN]\n> body', {
+    dialect: 'gfm',
+    extensions: ['callouts']
+  });
+  assert.equal(unknown.tree.children[0]?.kind, 'blockQuote');
+
+  const unclosed = parseMarkdown('---\ntitle: Demo', { extensions: ['frontMatter'] });
+  assert.equal(unclosed.tree.children[0]?.kind, 'frontMatter');
+  assert.equal(unclosed.diagnostics[0]?.code, 'unclosed-front-matter');
+});

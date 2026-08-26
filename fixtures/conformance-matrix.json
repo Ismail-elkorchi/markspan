@@ -6,9 +6,8 @@
   },
   "summary": {
     "total": 682,
-    "renderPassed": 681,
+    "renderPassed": 682,
     "renderFailed": 0,
-    "renderSkipped": 1,
     "astPassed": 682
   },
   "cases": [
@@ -6055,9 +6054,9 @@
       "suite": "gfm",
       "example": 20,
       "section": "Autolinks",
-      "render": "skip",
+      "render": "pass",
       "ast": "pass",
-      "renderMessage": "Upstream fixture declares <IGNORE>.",
+      "renderMessage": "The upstream fixture has no HTML oracle; parsing and AST invariants passed.",
       "astMessage": null
     },
     {

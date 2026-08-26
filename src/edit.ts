@@ -1,5 +1,6 @@
 import type {
   MarkdownDocumentNode,
+  MarkdownDiagnostic,
   MarkdownFootnoteDefinition,
   MarkdownNode,
   MarkdownReferenceDefinition,
@@ -7,7 +8,6 @@ import type {
 } from './model.js';
 import type { MarkdownParseOptions } from './options.js';
 import {
-  markdownLineCount,
   normalizeMarkdownIdentifier,
   parseMarkdownInternal,
   type ParsedMarkdownDocument
@@ -15,7 +15,11 @@ import {
 import { MarkdownBudgetExceededError } from './errors.js';
 import { markdownNodeChildren, walkMarkdown } from './analysis.js';
 import { BudgetController, resolveBudgets } from './internal/budget.js';
-import { assertSourceSpan, createMarkdownSourceIndex } from './source.js';
+import {
+  assertSourceSpan,
+  updateMarkdownSourceIndex,
+  type MarkdownSourceIndex
+} from './source.js';
 
 export interface MarkdownTextEdit {
   readonly span: SourceSpan;
@@ -169,7 +173,6 @@ export interface MarkdownSessionSnapshot {
 }
 
 export interface MarkdownSessionUpdate {
-  readonly strategy: 'incremental' | 'full';
   readonly previousRevision: number;
   readonly snapshot: MarkdownSessionSnapshot;
   readonly changedOldSpan: SourceSpan;
@@ -177,7 +180,14 @@ export interface MarkdownSessionUpdate {
   /** New-source range passed through the block parser for this update. */
   readonly parsedSpan: SourceSpan;
   readonly codeUnitDelta: number;
+  readonly instrumentation: MarkdownParseInstrumentation;
+}
+
+export interface MarkdownParseInstrumentation {
+  readonly completeSourceScans: number;
+  readonly parsedNodes: number;
   readonly reusedNodes: number;
+  readonly fullParse: boolean;
 }
 
 export interface MarkdownDocumentSession {
@@ -186,22 +196,18 @@ export interface MarkdownDocumentSession {
   replaceSource(source: string): MarkdownSessionUpdate;
 }
 
-function blockBoundaryBefore(source: string, offset: number): number {
-  let lineStart = source.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
-  while (lineStart > 0) {
-    const previousEnd = lineStart - 1;
-    const previousStart = source.lastIndexOf('\n', Math.max(0, previousEnd - 1)) + 1;
-    const line = source.slice(previousStart, previousEnd).replace(/\r$/u, '');
-    if (/^[\t ]*$/u.test(line)) return lineStart;
-    lineStart = previousStart;
-  }
-  return 0;
+function incrementalBlockBoundary(document: ParsedMarkdownDocument, offset: number): number {
+  const blocks = document.tree.children;
+  if (blocks.length === 0) return 0;
+  const containing = blocks.find((block) => block.span.start <= offset && offset <= block.span.end);
+  if (containing !== undefined) return containing.span.start;
+  const following = blocks.findIndex((block) => block.span.start > offset);
+  const index = following < 0 ? blocks.length - 1 : Math.max(0, following - 1);
+  return blocks[index]?.span.start ?? 0;
 }
 
-function containsGlobalDefinitions(source: string, document: ParsedMarkdownDocument): boolean {
-  return document.definitions.length > 0
-    || document.footnotes.length > 0
-    || /(?:^|\n)[^\r\n]*\[[^\]\r\n]+\]:/u.test(source);
+function mayContainDefinition(value: string): boolean {
+  return /(?:^|\n)[ \t]{0,3}\[(?:\^)?[^\]\r\n]+\]:/u.test(value);
 }
 
 function isSpan(value: unknown): value is SourceSpan {
@@ -263,6 +269,7 @@ function rebuildWithChildren(node: MarkdownNode, reconcile: (node: MarkdownNode)
   switch (node.kind) {
     case 'document':
     case 'blockQuote':
+    case 'callout':
     case 'listItem':
     case 'footnoteDefinition':
       return Object.freeze({ ...node, children: Object.freeze(next) }) as MarkdownNode;
@@ -282,6 +289,8 @@ function rebuildWithChildren(node: MarkdownNode, reconcile: (node: MarkdownNode)
     case 'image':
       return Object.freeze({ ...node, children: Object.freeze(next) }) as MarkdownNode;
     case 'codeBlock':
+    case 'mathBlock':
+    case 'frontMatter':
     case 'thematicBreak':
     case 'htmlBlock':
     case 'linkDefinition':
@@ -289,6 +298,7 @@ function rebuildWithChildren(node: MarkdownNode, reconcile: (node: MarkdownNode)
     case 'escape':
     case 'characterReference':
     case 'codeSpan':
+    case 'mathInline':
     case 'softBreak':
     case 'hardBreak':
     case 'htmlInline':
@@ -336,43 +346,77 @@ function reconcileTree(
   return Object.freeze({ ...reconciled, id: oldTree.id });
 }
 
+interface MarkdownTreeSummary {
+  readonly nodeCount: number;
+  readonly height: number;
+  readonly definitions: readonly MarkdownReferenceDefinition[];
+  readonly footnotes: readonly MarkdownFootnoteDefinition[];
+}
+
+function summarizeMarkdownTree(
+  node: MarkdownNode,
+  cache: WeakMap<object, MarkdownTreeSummary>
+): MarkdownTreeSummary {
+  const cached = cache.get(node);
+  if (cached !== undefined) return cached;
+  const children = markdownNodeChildren(node);
+  const childSummaries = children.map((child) => summarizeMarkdownTree(child, cache));
+  const definitions: MarkdownReferenceDefinition[] = [];
+  const footnotes: MarkdownFootnoteDefinition[] = [];
+  if (node.kind === 'linkDefinition' && node.active) {
+    definitions.push(Object.freeze({
+      label: node.label,
+      normalizedLabel: node.normalizedLabel,
+      destination: node.destination,
+      title: node.title,
+      span: node.span,
+      nodeId: node.id
+    }));
+  } else if (node.kind === 'footnoteDefinition' && node.active) {
+    footnotes.push(Object.freeze({
+      label: node.label,
+      normalizedLabel: node.normalizedLabel,
+      span: node.span,
+      nodeId: node.id
+    }));
+  }
+  let nodeCount = 1;
+  let height = 1;
+  for (const summary of childSummaries) {
+    nodeCount += summary.nodeCount;
+    height = Math.max(height, summary.height + 1);
+    definitions.push(...summary.definitions);
+    footnotes.push(...summary.footnotes);
+  }
+  const created: MarkdownTreeSummary = Object.freeze({
+    nodeCount,
+    height,
+    definitions: Object.freeze(definitions),
+    footnotes: Object.freeze(footnotes)
+  });
+  cache.set(node, created);
+  return created;
+}
+
 function assembleSessionDocument(
   parsed: ParsedMarkdownDocument,
   tree: MarkdownDocumentNode,
   source: string,
-  options: MarkdownParseOptions
+  options: MarkdownParseOptions,
+  totalLines: number,
+  sourceIndex: MarkdownSourceIndex,
+  summaryCache: WeakMap<object, MarkdownTreeSummary>
 ): ParsedMarkdownDocument {
-  const definitions: MarkdownReferenceDefinition[] = [];
-  const footnotes: MarkdownFootnoteDefinition[] = [];
-  let nodeCount = 0;
-  let maximumDepth = 0;
-  for (const { node, depth } of walkMarkdown(tree)) {
-    nodeCount += 1;
-    maximumDepth = Math.max(maximumDepth, depth);
-    if (node.kind === 'linkDefinition' && node.active) {
-      definitions.push(Object.freeze({
-        label: node.label,
-        normalizedLabel: node.normalizedLabel,
-        destination: node.destination,
-        title: node.title,
-        span: node.span,
-        nodeId: node.id
-      }));
-    } else if (node.kind === 'footnoteDefinition' && node.active) {
-      footnotes.push(Object.freeze({
-        label: node.label,
-        normalizedLabel: node.normalizedLabel,
-        span: node.span,
-        nodeId: node.id
-      }));
-    }
-  }
+  const summary = summarizeMarkdownTree(tree, summaryCache);
+  const definitions = summary.definitions;
+  const footnotes = summary.footnotes;
+  const nodeCount = summary.nodeCount;
+  const maximumDepth = summary.height - 1;
   const limits = resolveBudgets(options.budgets);
   if (nodeCount > limits.maxNodes) throw new MarkdownBudgetExceededError('maxNodes', limits.maxNodes, nodeCount);
   if (maximumDepth > limits.maxDepth) throw new MarkdownBudgetExceededError('maxDepth', limits.maxDepth, maximumDepth);
   const definitionLookup = new Map(definitions.map((entry) => [entry.normalizedLabel, entry]));
   const footnoteLookup = new Map(footnotes.map((entry) => [entry.normalizedLabel, entry]));
-  const totalLines = markdownLineCount(source);
   const usage = Object.freeze({
     inputCodeUnits: source.length,
     lines: totalLines,
@@ -382,7 +426,7 @@ function assembleSessionDocument(
   return Object.freeze({
     tree,
     sourceText: source,
-    sourceIndex: createMarkdownSourceIndex(source),
+    sourceIndex,
     definitions: Object.freeze(definitions),
     footnotes: Object.freeze(footnotes),
     diagnostics: parsed.diagnostics,
@@ -390,6 +434,7 @@ function assembleSessionDocument(
       dialect: parsed.metadata.dialect,
       commonMarkVersion: parsed.metadata.commonMarkVersion,
       gfmVersion: parsed.metadata.gfmVersion,
+      extensions: parsed.metadata.extensions,
       sourceCodeUnits: source.length,
       lineCount: totalLines,
       nodeCount,
@@ -407,6 +452,50 @@ function assembleSessionDocument(
   });
 }
 
+function spansIntersectChange(span: SourceSpan, change: SourceSpan): boolean {
+  return span.start < change.end && change.start < span.end;
+}
+
+function changedLineWindow(source: string, changed: SourceSpan): string {
+  const start = source.lastIndexOf('\n', Math.max(0, changed.start - 1)) + 1;
+  const followingBreak = source.indexOf('\n', changed.end);
+  const end = followingBreak < 0 ? source.length : followingBreak;
+  return source.slice(start, end);
+}
+
+function definitionEditRequiresFullParse(
+  document: ParsedMarkdownDocument,
+  applied: AppliedMarkdownEdits
+): boolean {
+  if (document.definitions.some((definition) => spansIntersectChange(definition.span, applied.changedOldSpan))) return true;
+  if (document.footnotes.some((footnote) => spansIntersectChange(footnote.span, applied.changedOldSpan))) return true;
+  return mayContainDefinition(changedLineWindow(applied.source, applied.changedNewSpan));
+}
+
+function fragmentSeed(
+  document: ParsedMarkdownDocument,
+  oldStart: number,
+  newStart: number
+): import('./internal/block-parser.js').BlockParseSeed {
+  const definitions = new Map(document.definitions
+    .filter((definition) => definition.span.end <= oldStart)
+    .map((definition) => [definition.normalizedLabel, {
+      label: definition.label,
+      normalizedLabel: definition.normalizedLabel,
+      destination: definition.destination,
+      title: definition.title,
+      span: freezeSpan(definition.span.start - newStart, definition.span.end - newStart)
+    }]));
+  const footnotes = new Map(document.footnotes
+    .filter((footnote) => footnote.span.end <= oldStart)
+    .map((footnote) => [footnote.normalizedLabel, {
+      label: footnote.label,
+      normalizedLabel: footnote.normalizedLabel,
+      span: freezeSpan(footnote.span.start - newStart, footnote.span.end - newStart)
+    }]));
+  return Object.freeze({ definitions, footnotes });
+}
+
 /** Create a stateful document that reparses only the block suffix after a safe blank-line boundary. */
 export function createMarkdownDocumentSession(
   source: string,
@@ -416,6 +505,7 @@ export function createMarkdownDocumentSession(
   let revision = 0;
   let currentSource = source;
   let nextNodeId = 1;
+  const summaryCache = new WeakMap<object, MarkdownTreeSummary>();
   let document = parseMarkdownInternal(source, { ...options, sourceRetention: 'text' }, { nextId: () => nextNodeId++ });
 
   const makeSnapshot = (): MarkdownSessionSnapshot => Object.freeze({
@@ -434,31 +524,52 @@ export function createMarkdownDocumentSession(
       if (applied.edits.length === 0) {
         revision += 1;
         return Object.freeze({
-          strategy: 'incremental',
           previousRevision,
           snapshot: makeSnapshot(),
           changedOldSpan: applied.changedOldSpan,
           changedNewSpan: applied.changedNewSpan,
           parsedSpan: freezeSpan(0, 0),
           codeUnitDelta: 0,
-          reusedNodes: oldDocument.metadata.nodeCount
+          instrumentation: Object.freeze({
+            completeSourceScans: 0,
+            parsedNodes: 0,
+            reusedNodes: oldDocument.metadata.nodeCount,
+            fullParse: false
+          })
         });
       }
       const limits = resolveBudgets(options.budgets);
-      new BudgetController(applied.source.length, markdownLineCount(applied.source), limits);
-      const global = containsGlobalDefinitions(oldSource, oldDocument)
-        || /(?:^|\n)[^\r\n]*\[[^\]\r\n]+\]:/u.test(applied.source);
-      const oldStart = global ? 0 : blockBoundaryBefore(oldSource, applied.changedOldSpan.start);
+      const fullParse = definitionEditRequiresFullParse(oldDocument, applied);
+      const oldStart = fullParse ? 0 : incrementalBlockBoundary(oldDocument, applied.changedOldSpan.start);
       const newStart = mapNormalizedOffset(oldStart, applied.edits, 'backward');
-      const prefix = oldDocument.tree.children.filter((block) => block.span.end <= oldStart);
+      const sourceIndex = newStart === 0
+        ? undefined
+        : updateMarkdownSourceIndex(oldDocument.sourceIndex, applied.source, applied.edits);
+      if (sourceIndex !== undefined) new BudgetController(applied.source.length, sourceIndex.lineCount, limits);
+      const oldPrefix = oldDocument.tree.children.filter((block) => block.span.end <= oldStart);
+      const laterDefinitionShifted = applied.codeUnitDelta !== 0 && (
+        oldDocument.definitions.some((definition) => definition.span.start >= oldStart)
+        || oldDocument.footnotes.some((footnote) => footnote.span.start >= oldStart)
+      );
+      const prefix = laterDefinitionShifted
+        ? oldPrefix.map((block) => mapOldValue(
+            block,
+            (offset, affinity) => mapNormalizedOffset(offset, applied.edits, affinity)
+          ) as MarkdownNode as MarkdownDocumentNode['children'][number])
+        : oldPrefix;
       const fragment = parseMarkdownInternal(
         applied.source.slice(newStart),
         { ...options, sourceRetention: 'none' },
-        { sourceOffset: newStart, documentLength: applied.source.length, nextId: () => nextNodeId++ }
+        {
+          sourceOffset: newStart,
+          documentLength: applied.source.length,
+          seed: fragmentSeed(oldDocument, oldStart, newStart),
+          nextId: () => nextNodeId++
+        }
       );
       const oldSuffixTree: MarkdownDocumentNode = Object.freeze({
         ...oldDocument.tree,
-        children: Object.freeze(oldDocument.tree.children.slice(prefix.length))
+        children: Object.freeze(oldDocument.tree.children.slice(oldPrefix.length))
       });
       const newSuffixTree: MarkdownDocumentNode = Object.freeze({
         ...fragment.tree,
@@ -477,23 +588,50 @@ export function createMarkdownDocumentSession(
         span: freezeSpan(0, applied.source.length),
         children: Object.freeze([...prefix, ...reconciledSuffix.children])
       });
-      document = assembleSessionDocument(fragment, tree, applied.source, options);
+      const prefixDiagnostics = oldDocument.diagnostics
+        .filter((diagnostic) => diagnostic.span.end <= oldStart)
+        .map((diagnostic) => mapOldValue(
+          diagnostic,
+          (offset, affinity) => mapNormalizedOffset(offset, applied.edits, affinity)
+        ) as MarkdownDiagnostic);
+      const assembledInput: ParsedMarkdownDocument = prefixDiagnostics.length === 0
+        ? fragment
+        : Object.freeze({
+            ...fragment,
+            diagnostics: Object.freeze([...prefixDiagnostics, ...fragment.diagnostics])
+          });
+      document = assembleSessionDocument(
+        assembledInput,
+        tree,
+        applied.source,
+        options,
+        sourceIndex?.lineCount ?? fragment.metadata.lineCount,
+        sourceIndex ?? fragment.sourceIndex,
+        summaryCache
+      );
       currentSource = applied.source;
       revision += 1;
       const oldSuffixEntries = [...walkMarkdown(oldSuffixTree)];
-      const prefixNodes = oldDocument.metadata.nodeCount - oldSuffixEntries.length;
+      const prefixNodes = oldPrefix.reduce(
+        (count, block) => count + summarizeMarkdownTree(block, summaryCache).nodeCount,
+        1
+      );
       const oldSuffixIds = new Set(oldSuffixEntries.map(({ node }) => node.id));
       const reusedSuffixNodes = [...walkMarkdown(reconciledSuffix)].filter(({ node }) => oldSuffixIds.has(node.id)).length;
       const reusedNodes = prefixNodes + reusedSuffixNodes;
       return Object.freeze({
-        strategy: newStart === 0 ? 'full' : 'incremental',
         previousRevision,
         snapshot: makeSnapshot(),
         changedOldSpan: applied.changedOldSpan,
         changedNewSpan: applied.changedNewSpan,
         parsedSpan: freezeSpan(newStart, applied.source.length),
         codeUnitDelta: applied.codeUnitDelta,
-        reusedNodes
+        instrumentation: Object.freeze({
+          completeSourceScans: newStart === 0 ? 2 : 0,
+          parsedNodes: fragment.metadata.nodeCount,
+          reusedNodes,
+          fullParse: newStart === 0
+        })
       });
     },
     replaceSource(nextSource: string): MarkdownSessionUpdate {
@@ -506,18 +644,30 @@ export function createMarkdownDocumentSession(
       const parsed = parseMarkdownInternal(nextSource, { ...options, sourceRetention: 'text' }, { nextId: () => nextNodeId++ });
       const replacementEdit = Object.freeze({ span: freezeSpan(0, previousLength), text: nextSource });
       const tree = reconcileTree(oldTree, parsed.tree, oldSource, nextSource, [replacementEdit]);
-      document = assembleSessionDocument(parsed, tree, nextSource, options);
+      document = assembleSessionDocument(
+        parsed,
+        tree,
+        nextSource,
+        options,
+        parsed.metadata.lineCount,
+        parsed.sourceIndex,
+        summaryCache
+      );
       currentSource = nextSource;
       revision += 1;
       return Object.freeze({
-        strategy: 'full',
         previousRevision,
         snapshot: makeSnapshot(),
         changedOldSpan: freezeSpan(0, previousLength),
         changedNewSpan: freezeSpan(0, nextSource.length),
         parsedSpan: freezeSpan(0, nextSource.length),
         codeUnitDelta: nextSource.length - previousLength,
-        reusedNodes: [...walkMarkdown(tree)].filter(({ node }) => oldIds.has(node.id)).length
+        instrumentation: Object.freeze({
+          completeSourceScans: 2,
+          parsedNodes: parsed.metadata.nodeCount,
+          reusedNodes: [...walkMarkdown(tree)].filter(({ node }) => oldIds.has(node.id)).length,
+          fullParse: true
+        })
       });
     }
   };

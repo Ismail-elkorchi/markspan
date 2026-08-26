@@ -9,6 +9,7 @@ export {
   type MarkdownDialect,
   type MarkdownParseBudgets,
   type MarkdownParseOptions,
+  type MarkdownSyntaxExtension,
   type MarkdownResourceUsage,
   type MarkdownSourceRetention,
   type ResolvedMarkdownParseBudgets
@@ -27,12 +28,14 @@ export * from './model.js';
 export {
   assertSourceSpan,
   createMarkdownSourceIndex,
+  updateMarkdownSourceIndex,
   isSourceSpan,
   mergeSourceSpans,
   sliceMarkdownSource,
   sourceSpanContains,
   sourceSpanIntersects,
   type MarkdownSourceIndex,
+  type MarkdownSourceIndexEdit,
   type SourcePosition
 } from './source.js';
 
@@ -70,6 +73,7 @@ export {
   type AppliedMarkdownEdits,
   type MarkdownDocumentSession,
   type MarkdownOffsetAffinity,
+  type MarkdownParseInstrumentation,
   type MarkdownSessionSnapshot,
   type MarkdownSessionUpdate,
   type MarkdownTextEdit

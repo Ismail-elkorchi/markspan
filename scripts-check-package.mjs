@@ -17,7 +17,10 @@ assert.equal(lock.packages[''].dependencies, undefined, 'lockfile must have zero
 for (const [name, version] of Object.entries(pkg.devDependencies)) {
   assert.match(version, /^\d+\.\d+\.\d+$/u, `${name} must use an exact version`);
 }
-assert.equal(pkg.packageManager, 'npm@12.0.2');
+const packageManager = /^npm@(\d+\.\d+\.\d+)$/u.exec(pkg.packageManager);
+assert(packageManager, 'packageManager must pin an exact npm release');
+const activePackageManager = /^npm\/(\d+\.\d+\.\d+)/u.exec(process.env['npm_config_user_agent'] ?? '');
+if (activePackageManager !== null) assert.equal(activePackageManager[1], packageManager[1]);
 assert.equal(pkg.sideEffects, false);
 assert.equal(pkg.publishConfig.provenance, true);
 assert.deepEqual(Object.keys(jsr.exports), Object.keys(pkg.exports));

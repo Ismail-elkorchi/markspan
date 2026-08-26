@@ -8,17 +8,20 @@ import type {
   MarkdownDialect,
   MarkdownParseOptions,
   MarkdownResourceUsage,
-  MarkdownSourceRetention
+  MarkdownSourceRetention,
+  MarkdownSyntaxExtension
 } from './options.js';
 import { MarkdownConfigurationError } from './errors.js';
 import { createMarkdownSourceIndex, type MarkdownSourceIndex } from './source.js';
 import { BudgetController, resolveBudgets } from './internal/budget.js';
 import { convertMarkdown } from './internal/parser-engine.js';
+import type { BlockParseSeed } from './internal/block-parser.js';
 
 export interface MarkdownParseMetadata {
   readonly dialect: MarkdownDialect;
   readonly commonMarkVersion: '0.31.2';
   readonly gfmVersion: '0.29.0.gfm.13' | null;
+  readonly extensions: readonly MarkdownSyntaxExtension[];
   readonly sourceCodeUnits: number;
   readonly lineCount: number;
   readonly nodeCount: number;
@@ -74,9 +77,28 @@ function optionRetention(value: MarkdownSourceRetention | undefined): MarkdownSo
   return value;
 }
 
+const syntaxExtensions = new Set<MarkdownSyntaxExtension>(['frontMatter', 'callouts', 'math']);
+
+function optionExtensions(value: readonly MarkdownSyntaxExtension[] | undefined): readonly MarkdownSyntaxExtension[] {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new MarkdownConfigurationError('extensions must be an array.');
+  const resolved: MarkdownSyntaxExtension[] = [];
+  for (const extension of value) {
+    if (!syntaxExtensions.has(extension)) {
+      throw new MarkdownConfigurationError(`Unknown Markdown syntax extension: ${String(extension)}.`);
+    }
+    if (resolved.includes(extension)) {
+      throw new MarkdownConfigurationError(`Markdown syntax extension is duplicated: ${extension}.`);
+    }
+    resolved.push(extension);
+  }
+  return Object.freeze(resolved);
+}
+
 export interface MarkdownParseInternals {
   readonly sourceOffset?: number;
   readonly documentLength?: number;
+  readonly seed?: BlockParseSeed;
   nextId(): number;
 }
 
@@ -88,11 +110,14 @@ export function parseMarkdownInternal(
 ): ParsedMarkdownDocument {
   const dialect = optionDialect(options.dialect);
   const sourceRetention = optionRetention(options.sourceRetention);
+  const extensions = optionExtensions(options.extensions);
   const limits = resolveBudgets(options.budgets);
   const totalLines = markdownLineCount(source);
   const budget = new BudgetController(source.length, totalLines, limits);
   const converted = convertMarkdown(source, {
     dialect,
+    extensions: new Set(extensions),
+    seed: internals.seed ?? {},
     sourceOffset: internals.sourceOffset ?? 0,
     documentLength: internals.documentLength ?? source.length,
     budget,
@@ -105,6 +130,7 @@ export function parseMarkdownInternal(
     dialect,
     commonMarkVersion: '0.31.2',
     gfmVersion: dialect === 'gfm' ? '0.29.0.gfm.13' : null,
+    extensions,
     sourceCodeUnits: source.length,
     lineCount: totalLines,
     nodeCount: usage.nodes,

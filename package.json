@@ -1,6 +1,6 @@
 {
   "name": "markspan",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Zero-dependency CommonMark and GFM parser with source-exact syntax trees and incremental updates.",
   "keywords": [
     "markdown",
@@ -26,7 +26,7 @@
   },
   "type": "module",
   "sideEffects": false,
-  "packageManager": "npm@12.0.2",
+  "packageManager": "npm@11.8.0",
   "engines": {
     "node": ">=22.0.0",
     "npm": ">=11.0.0"
@@ -76,17 +76,18 @@
     "clean": "node scripts-clean.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "npm run clean && tsc -p tsconfig.build.json",
-    "test": "npm run build && node --test test/analysis-edit.test.mjs test/invariants.test.mjs test/parser.test.mjs test/resources.test.mjs",
+    "test": "npm run build && node --test test/analysis-edit.test.mjs test/incremental-equivalence.test.mjs test/invariants.test.mjs test/parser.test.mjs test/resources.test.mjs",
     "test:conformance": "npm run build && node scripts/run-conformance.mjs --check",
     "test:fuzz": "npm run build && node --test test/fuzz.test.mjs",
     "test:browser": "npm run build && node scripts/test-browser.mjs",
     "test:deno": "npm run build && deno run --allow-read scripts/test-deno.ts",
     "test:bun": "npm run build && bun scripts/test-bun.mjs",
     "test:types": "tsc --noEmit -p tsconfig.type-tests.json",
-    "test:jsr": "jsr publish --dry-run",
+    "test:jsr": "jsr publish --dry-run --allow-dirty",
     "benchmark": "npm run build && node benchmark/pathological.mjs",
     "test:release": "npm run build && node scripts/verify-release.mjs",
     "check": "npm run typecheck && npm test && npm run test:fuzz && npm run test:types && npm run test:conformance && npm run test:jsr && node scripts-check-package.mjs",
+    "verify": "npm run check && npm run test:browser && npm run test:deno && npm run test:bun && npm run test:release && npm pack --dry-run",
     "publish:jsr": "jsr publish",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check"

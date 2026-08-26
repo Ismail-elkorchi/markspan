@@ -1,5 +1,6 @@
 export type MarkdownDialect = 'commonmark' | 'gfm';
 export type MarkdownSourceRetention = 'none' | 'text';
+export type MarkdownSyntaxExtension = 'frontMatter' | 'callouts' | 'math';
 
 export interface MarkdownParseBudgets {
   /** Maximum JavaScript UTF-16 code units accepted as input. */
@@ -21,6 +22,8 @@ export interface MarkdownParseOptions {
   readonly dialect?: MarkdownDialect;
   /** Retain the exact source string on the result. */
   readonly sourceRetention?: MarkdownSourceRetention;
+  /** Explicit non-CommonMark syntax extensions. */
+  readonly extensions?: readonly MarkdownSyntaxExtension[];
   readonly budgets?: MarkdownParseBudgets;
 }
 

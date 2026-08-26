@@ -34,6 +34,29 @@ export interface MarkdownBlockQuoteNode extends MarkdownNodeBase<'blockQuote'> {
   readonly children: readonly MarkdownBlockNode[];
 }
 
+export type MarkdownCalloutKind = 'note' | 'tip' | 'important' | 'warning' | 'caution';
+
+export interface MarkdownCalloutNode extends MarkdownNodeBase<'callout'> {
+  readonly calloutKind: MarkdownCalloutKind;
+  readonly markerSpans: readonly SourceSpan[];
+  readonly labelSpan: SourceSpan;
+  readonly children: readonly MarkdownBlockNode[];
+}
+
+export interface MarkdownFrontMatterEntry {
+  readonly key: string;
+  readonly value: string;
+  readonly keySpan: SourceSpan;
+  readonly valueSpan: SourceSpan;
+}
+
+export interface MarkdownFrontMatterNode extends MarkdownNodeBase<'frontMatter'> {
+  readonly raw: string;
+  readonly openingMarkerSpan: SourceSpan;
+  readonly closingMarkerSpan: SourceSpan | null;
+  readonly entries: readonly MarkdownFrontMatterEntry[];
+}
+
 export type MarkdownListDelimiter = '.' | ')' | null;
 export type MarkdownBulletMarker = '-' | '+' | '*' | null;
 
@@ -77,6 +100,13 @@ export interface MarkdownCodeBlockNode extends MarkdownNodeBase<'codeBlock'> {
   readonly infoSpan: SourceSpan | null;
   readonly language: string | null;
   readonly fence: MarkdownFence | null;
+}
+
+export interface MarkdownMathBlockNode extends MarkdownNodeBase<'mathBlock'> {
+  readonly value: string;
+  readonly contentSpan: SourceSpan;
+  readonly openingMarkerSpan: SourceSpan;
+  readonly closingMarkerSpan: SourceSpan | null;
 }
 
 export interface MarkdownThematicBreakNode extends MarkdownNodeBase<'thematicBreak'> {
@@ -170,6 +200,13 @@ export interface MarkdownCodeSpanNode extends MarkdownNodeBase<'codeSpan'> {
   readonly closingMarkerSpan: SourceSpan;
 }
 
+export interface MarkdownMathInlineNode extends MarkdownNodeBase<'mathInline'> {
+  readonly value: string;
+  readonly contentSpan: SourceSpan;
+  readonly openingMarkerSpan: SourceSpan;
+  readonly closingMarkerSpan: SourceSpan;
+}
+
 export type MarkdownLinkForm =
   | 'inline'
   | 'fullReference'
@@ -224,8 +261,11 @@ export type MarkdownBlockNode =
   | MarkdownParagraphNode
   | MarkdownHeadingNode
   | MarkdownBlockQuoteNode
+  | MarkdownCalloutNode
+  | MarkdownFrontMatterNode
   | MarkdownListNode
   | MarkdownCodeBlockNode
+  | MarkdownMathBlockNode
   | MarkdownThematicBreakNode
   | MarkdownHtmlBlockNode
   | MarkdownLinkDefinitionNode
@@ -240,6 +280,7 @@ export type MarkdownInlineNode =
   | MarkdownStrongNode
   | MarkdownStrikethroughNode
   | MarkdownCodeSpanNode
+  | MarkdownMathInlineNode
   | MarkdownLinkNode
   | MarkdownImageNode
   | MarkdownSoftBreakNode
@@ -275,10 +316,15 @@ export interface MarkdownFootnoteDefinition {
   readonly nodeId: number;
 }
 
-export type MarkdownDiagnosticSeverity = 'info' | 'warning';
+export type MarkdownDiagnosticSeverity = 'info' | 'warning' | 'error';
 
 export interface MarkdownDiagnostic {
-  readonly code: 'duplicate-reference-definition' | 'duplicate-footnote-definition';
+  readonly code:
+    | 'duplicate-reference-definition'
+    | 'duplicate-footnote-definition'
+    | 'invalid-front-matter'
+    | 'unclosed-front-matter'
+    | 'unclosed-math';
   readonly severity: MarkdownDiagnosticSeverity;
   readonly message: string;
   readonly span: SourceSpan;

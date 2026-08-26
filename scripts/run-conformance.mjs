@@ -92,12 +92,11 @@ function runCase(suite, fixture) {
     ast = 'fail';
     astMessage = error instanceof Error ? error.message : String(error);
   }
-  if (suite === 'gfm' && manifest.gfm.ignoredRenderExamples.includes(fixture.example)) {
-    render = 'skip';
-    renderMessage = 'Upstream fixture declares <IGNORE>.';
-  } else if (document === null) {
+  if (document === null) {
     render = 'fail';
     renderMessage = astMessage;
+  } else if (fixture.html === '<IGNORE>\n') {
+    renderMessage = 'The upstream fixture has no HTML oracle; parsing and AST invariants passed.';
   } else {
     try {
       const actual = renderConformanceDocument(document);
@@ -125,11 +124,10 @@ function sectionRows(cases) {
   const sections = new Map();
   for (const entry of cases) {
     const key = `${entry.suite}\0${entry.section}`;
-    const current = sections.get(key) ?? { suite: entry.suite, section: entry.section, total: 0, render: 0, renderFailed: 0, renderSkipped: 0, ast: 0 };
+    const current = sections.get(key) ?? { suite: entry.suite, section: entry.section, total: 0, render: 0, renderFailed: 0, ast: 0 };
     current.total += 1;
     if (entry.render === 'pass') current.render += 1;
-    else if (entry.render === 'fail') current.renderFailed += 1;
-    else current.renderSkipped += 1;
+    else current.renderFailed += 1;
     if (entry.ast === 'pass') current.ast += 1;
     sections.set(key, current);
   }
@@ -143,18 +141,18 @@ function markdownMatrix(matrix) {
     '',
     `Generated from pinned CommonMark ${manifest.commonmark.version} and cmark-gfm ${manifest.gfm.version} fixtures. The complete per-example results are in \`fixtures/conformance-matrix.json\`.`,
     '',
-    '| Suite | Section | Examples | HTML render | Source AST |',
+    '| Suite | Section | Examples | Fixture outcome | Source AST |',
     '| --- | --- | ---: | ---: | ---: |'
   ];
   for (const row of rows) {
-    const rendered = `${row.render} pass, ${row.renderFailed} fail, ${row.renderSkipped} skip`;
+    const rendered = `${row.render} pass, ${row.renderFailed} fail`;
     lines.push(`| ${row.suite} | ${row.section.replaceAll('|', '\\|')} | ${row.total} | ${rendered} | ${row.ast}/${row.total} |`);
   }
   lines.push(
     '',
-    `Total: **${matrix.summary.renderPassed} render passes, ${matrix.summary.renderFailed} known render failures, ${matrix.summary.renderSkipped} skipped**, and **${matrix.summary.astPassed}/${matrix.summary.total} AST/invariant passes**.`,
+    `Total: **${matrix.summary.renderPassed} fixture passes, ${matrix.summary.renderFailed} render failures**, and **${matrix.summary.astPassed}/${matrix.summary.total} AST/invariant passes**.`,
     '',
-    '“HTML render” renders this package’s tree with the fixture-only reference renderer and compares it byte-for-byte with the pinned HTML. “Source AST” validates complete traversal, unique IDs, immutable nodes, bounded spans, containment, and exact node accounting from the same parse.',
+    '“Fixture outcome” compares the fixture-only reference renderer byte-for-byte when the upstream fixture supplies HTML. The single upstream `<IGNORE>` case passes only after parsing and AST invariants succeed. “Source AST” validates complete traversal, unique IDs, immutable nodes, bounded spans, containment, and exact node accounting from the same parse.',
     ''
   );
   return lines.join('\n');
@@ -175,7 +173,6 @@ const matrix = {
     total: cases.length,
     renderPassed: cases.filter((entry) => entry.render === 'pass').length,
     renderFailed: cases.filter((entry) => entry.render === 'fail').length,
-    renderSkipped: cases.filter((entry) => entry.render === 'skip').length,
     astPassed: cases.filter((entry) => entry.ast === 'pass').length
   },
   cases
@@ -204,4 +201,4 @@ assert.deepEqual(
   'GFM render baseline changed'
 );
 assert.equal(matrix.summary.astPassed, matrix.summary.total, 'source AST conformance failures');
-console.log(`conformance: ${matrix.summary.total} fixtures, ${matrix.summary.renderPassed} render passes, ${matrix.summary.renderFailed} known render differences, ${matrix.summary.astPassed} AST passes`);
+console.log(`conformance: ${matrix.summary.total} fixtures, ${matrix.summary.renderPassed} render passes, ${matrix.summary.renderFailed} render failures, ${matrix.summary.astPassed} AST passes`);

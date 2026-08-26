@@ -74,10 +74,10 @@ test('document session reparses a block suffix and preserves unaffected identiti
   const before = session.snapshot();
   const start = source.indexOf('Second');
   const update = session.applyEdits([{ span: { start, end: start + 6 }, text: 'Changed' }]);
-  assert.equal(update.strategy, 'incremental');
+  assert.equal(update.instrumentation.fullParse, false);
   assert.equal(update.snapshot.revision, 1);
   assert(update.parsedSpan.start > 0);
-  assert(update.reusedNodes >= 5);
+  assert(update.instrumentation.reusedNodes >= 5);
   assert.equal(update.snapshot.document.tree.id, before.document.tree.id);
   assert.equal(update.snapshot.document.tree.children[0], before.document.tree.children[0]);
   assert.equal(update.snapshot.document.tree.children[1], before.document.tree.children[1]);
@@ -94,7 +94,7 @@ test('shifted unchanged blocks retain IDs without retaining stale spans', () => 
   const alphaEnd = source.indexOf('Alpha.') + 'Alpha.'.length;
   const update = session.applyEdits([{ span: { start: alphaEnd, end: alphaEnd }, text: ' Expanded.' }]);
   const after = update.snapshot.document.tree.children;
-  assert.equal(update.strategy, 'incremental');
+  assert.equal(update.instrumentation.fullParse, false);
   assert.equal(after[0], before[0]);
   assert.equal(after[2]?.id, before[2]?.id);
   assert.equal(after[3]?.id, before[3]?.id);
@@ -102,14 +102,14 @@ test('shifted unchanged blocks retain IDs without retaining stale spans', () => 
   assert.equal(after[2]?.span.start, (before[2]?.span.start ?? 0) + ' Expanded.'.length);
 });
 
-test('global definitions trigger a full parse while unrelated stable nodes are reconciled', () => {
+test('edits after definitions retain an incremental suffix and stable resolved links', () => {
   const source = '[guide]: /one\n\n[guide]\n\nTail';
   const session = createMarkdownDocumentSession(source);
   const before = session.snapshot();
   const tail = source.indexOf('Tail');
   const update = session.applyEdits([{ span: { start: tail, end: tail + 4 }, text: 'Changed tail' }]);
-  assert.equal(update.strategy, 'full');
-  assert.equal(update.parsedSpan.start, 0);
+  assert.equal(update.instrumentation.fullParse, false);
+  assert(update.parsedSpan.start > 0);
   assert.equal(update.snapshot.document.tree.children[0], before.document.tree.children[0]);
   assert.equal(update.snapshot.document.tree.children[1], before.document.tree.children[1]);
   assert.equal(update.snapshot.document.definitionFor('guide')?.destination, '/one');

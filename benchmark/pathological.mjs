@@ -42,9 +42,9 @@ results.push({
   codeUnits: editorSource.length,
   milliseconds: performance.now() - editAt,
   nodes: update.snapshot.document.metadata.nodeCount,
-  outcome: update.strategy,
+  outcome: update.instrumentation.fullParse ? 'full' : 'incremental',
   parsedCodeUnits: update.parsedSpan.end - update.parsedSpan.start,
-  reusedNodes: update.reusedNodes
+  reusedNodes: update.instrumentation.reusedNodes
 });
 
 console.log(JSON.stringify({ generatedAt: new Date().toISOString(), results }, null, 2));

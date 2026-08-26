@@ -1,12 +1,13 @@
 import type {
   MarkdownBulletMarker,
+  MarkdownCalloutKind,
   MarkdownDiagnostic,
   MarkdownHtmlBlockType,
   MarkdownListDelimiter,
   MarkdownTableAlignment,
   SourceSpan
 } from '../model.js';
-import type { MarkdownDialect } from '../options.js';
+import type { MarkdownDialect, MarkdownSyntaxExtension } from '../options.js';
 import { decodeMarkdownString } from './decode.js';
 import type { InlineDefinitionTarget, InlineFootnoteTarget } from './inline-parser.js';
 import {
@@ -41,6 +42,25 @@ export interface RawBlockQuote extends RawBlockBase<'blockQuote'> {
   readonly children: readonly RawBlock[];
 }
 
+export interface RawCallout extends RawBlockBase<'callout'> {
+  readonly calloutKind: MarkdownCalloutKind;
+  readonly markerSpans: readonly SourceSpan[];
+  readonly labelSpan: SourceSpan;
+  readonly children: readonly RawBlock[];
+}
+
+export interface RawFrontMatter extends RawBlockBase<'frontMatter'> {
+  readonly raw: string;
+  readonly openingMarkerSpan: SourceSpan;
+  readonly closingMarkerSpan: SourceSpan | null;
+  readonly entries: readonly {
+    readonly key: string;
+    readonly value: string;
+    readonly keySpan: SourceSpan;
+    readonly valueSpan: SourceSpan;
+  }[];
+}
+
 export interface RawListItem extends RawBlockBase<'listItem'> {
   readonly markerSpan: SourceSpan;
   readonly contentIndent: number;
@@ -72,6 +92,13 @@ export interface RawCodeBlock extends RawBlockBase<'codeBlock'> {
     readonly openingSpan: SourceSpan;
     readonly closingSpan: SourceSpan | null;
   } | null;
+}
+
+export interface RawMathBlock extends RawBlockBase<'mathBlock'> {
+  readonly value: string;
+  readonly contentSpan: SourceSpan;
+  readonly openingMarkerSpan: SourceSpan;
+  readonly closingMarkerSpan: SourceSpan | null;
 }
 
 export interface RawThematicBreak extends RawBlockBase<'thematicBreak'> {
@@ -121,8 +148,11 @@ export type RawBlock =
   | RawParagraph
   | RawHeading
   | RawBlockQuote
+  | RawCallout
+  | RawFrontMatter
   | RawList
   | RawCodeBlock
+  | RawMathBlock
   | RawThematicBreak
   | RawHtmlBlock
   | RawLinkDefinition
@@ -131,9 +161,14 @@ export type RawBlock =
 
 export interface BlockParseResult {
   readonly blocks: readonly RawBlock[];
-  readonly definitions: ReadonlyMap<string, RawLinkDefinition>;
-  readonly footnotes: ReadonlyMap<string, RawFootnoteDefinition>;
+  readonly definitions: ReadonlyMap<string, InlineDefinitionTarget>;
+  readonly footnotes: ReadonlyMap<string, InlineFootnoteTarget>;
   readonly diagnostics: readonly MarkdownDiagnostic[];
+}
+
+export interface BlockParseSeed {
+  readonly definitions?: ReadonlyMap<string, InlineDefinitionTarget>;
+  readonly footnotes?: ReadonlyMap<string, InlineFootnoteTarget>;
 }
 
 interface ListMarker {
@@ -204,14 +239,19 @@ function replaceViewBounds(view: LineView, start: number, end = view.line.conten
 }
 
 class BlockParser {
-  private readonly definitions = new Map<string, RawLinkDefinition>();
-  private readonly footnotes = new Map<string, RawFootnoteDefinition>();
+  private readonly definitions: Map<string, InlineDefinitionTarget>;
+  private readonly footnotes: Map<string, InlineFootnoteTarget>;
   private readonly diagnostics: MarkdownDiagnostic[] = [];
 
   constructor(
     private readonly source: string,
-    private readonly dialect: MarkdownDialect
-  ) {}
+    private readonly dialect: MarkdownDialect,
+    private readonly extensions: ReadonlySet<MarkdownSyntaxExtension>,
+    seed: BlockParseSeed
+  ) {
+    this.definitions = new Map(seed.definitions);
+    this.footnotes = new Map(seed.footnotes);
+  }
 
   parse(views: readonly LineView[]): BlockParseResult {
     const blocks = this.parseBlocks(views);
@@ -233,6 +273,15 @@ class BlockParser {
         continue;
       }
 
+      if (index === 0 && this.extensions.has('frontMatter')) {
+        const frontMatter = this.frontMatter(views);
+        if (frontMatter !== null) {
+          blocks.push(frontMatter.block);
+          index = frontMatter.endLine;
+          continue;
+        }
+      }
+
       const quote = this.blockQuote(views, index);
       if (quote !== null) {
         blocks.push(quote.block);
@@ -245,6 +294,15 @@ class BlockParser {
         blocks.push(fence.block);
         index = fence.endLine;
         continue;
+      }
+
+      if (this.extensions.has('math')) {
+        const math = this.mathBlock(views, index);
+        if (math !== null) {
+          blocks.push(math.block);
+          index = math.endLine;
+          continue;
+        }
       }
 
       const heading = this.atxHeading(view);
@@ -337,7 +395,7 @@ class BlockParser {
     return consumeIndent(this.source, view, maximum);
   }
 
-  private blockQuote(views: readonly LineView[], start: number): { readonly block: RawBlockQuote; readonly endLine: number } | null {
+  private blockQuote(views: readonly LineView[], start: number): { readonly block: RawBlockQuote | RawCallout; readonly endLine: number } | null {
     const first = views[start];
     if (first === undefined) return null;
     const firstIndent = this.indentation(first, 3);
@@ -381,14 +439,152 @@ class BlockParser {
       lastContentEnd = view.line.contentEnd;
       index += 1;
     }
-    return {
-      block: {
+    const firstChild = children[0];
+    const callout = firstChild === undefined || !this.extensions.has('callouts')
+      ? null
+      : /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*$/u.exec(
+          this.source.slice(firstChild.contentStart, firstChild.line.contentEnd)
+        );
+    const block = callout === null
+      ? {
         kind: 'blockQuote',
         span: span(firstIndent.offset, lastContentEnd),
         markerSpans: markers,
         children: this.parseBlocks(children)
-      },
+      } as RawBlockQuote
+      : {
+        kind: 'callout',
+        span: span(firstIndent.offset, lastContentEnd),
+        calloutKind: (callout[1] ?? '').toLowerCase() as MarkdownCalloutKind,
+        markerSpans: markers,
+        labelSpan: span(
+          (firstChild as LineView).contentStart,
+          (firstChild as LineView).line.contentEnd
+        ),
+        children: this.parseBlocks(children.slice(1))
+      } as RawCallout;
+    return {
+      block,
       endLine: index
+    };
+  }
+
+  private frontMatter(views: readonly LineView[]): { readonly block: RawFrontMatter; readonly endLine: number } | null {
+    const opening = views[0];
+    if (opening === undefined
+      || opening.line.start !== 0
+      || opening.contentStart !== 0
+      || this.source.slice(0, opening.line.contentEnd) !== '---') return null;
+    let closingIndex = -1;
+    for (let index = 1; index < views.length; index += 1) {
+      const view = views[index];
+      if (view !== undefined
+        && view.contentStart === view.line.start
+        && this.source.slice(view.contentStart, view.line.contentEnd) === '---') {
+        closingIndex = index;
+        break;
+      }
+    }
+    const contentViews = views.slice(1, closingIndex < 0 ? views.length : closingIndex);
+    const entries: RawFrontMatter['entries'][number][] = [];
+    for (const view of contentViews) {
+      const line = this.source.slice(view.contentStart, view.line.contentEnd);
+      if (/^[ \t]*(?:#.*)?$/u.test(line)) continue;
+      const match = /^([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*:[ \t]*(.*?)[ \t]*$/u.exec(line);
+      if (match === null || match[1] === undefined || match[2] === undefined) {
+        this.diagnostics.push({
+          code: 'invalid-front-matter',
+          severity: 'error',
+          message: 'Front matter entries must use a plain key followed by a colon and a value.',
+          span: span(view.contentStart, view.line.contentEnd)
+        });
+        continue;
+      }
+      const keyStart = view.contentStart + (match.index ?? 0);
+      const colon = line.indexOf(':', match[1].length);
+      let valueStart = view.contentStart + colon + 1;
+      while (valueStart < view.line.contentEnd && /[ \t]/u.test(this.source[valueStart] ?? '')) valueStart += 1;
+      let valueEnd = view.line.contentEnd;
+      while (valueEnd > valueStart && /[ \t]/u.test(this.source[valueEnd - 1] ?? '')) valueEnd -= 1;
+      if (this.source[valueStart] === '!') {
+        this.diagnostics.push({
+          code: 'invalid-front-matter',
+          severity: 'error',
+          message: 'YAML tags are not supported in front matter.',
+          span: span(valueStart, valueEnd)
+        });
+      }
+      entries.push({
+        key: match[1],
+        value: this.source.slice(valueStart, valueEnd),
+        keySpan: span(keyStart, keyStart + match[1].length),
+        valueSpan: span(valueStart, valueEnd)
+      });
+    }
+    const closing = closingIndex < 0 ? null : views[closingIndex];
+    if (closing === null || closing === undefined) {
+      this.diagnostics.push({
+        code: 'unclosed-front-matter',
+        severity: 'error',
+        message: 'Front matter must end with a closing --- delimiter.',
+        span: span(0, opening.line.contentEnd)
+      });
+    }
+    const contentStart = opening.line.end;
+    const contentEnd = closing?.line.start ?? this.source.length;
+    return {
+      block: {
+        kind: 'frontMatter',
+        span: span(0, closing?.line.contentEnd ?? this.source.length),
+        raw: this.source.slice(contentStart, contentEnd),
+        openingMarkerSpan: span(0, opening.line.contentEnd),
+        closingMarkerSpan: closing === undefined || closing === null
+          ? null
+          : span(closing.contentStart, closing.line.contentEnd),
+        entries
+      },
+      endLine: closingIndex < 0 ? views.length : closingIndex + 1
+    };
+  }
+
+  private mathBlock(views: readonly LineView[], start: number): { readonly block: RawMathBlock; readonly endLine: number } | null {
+    const opening = views[start];
+    if (opening === undefined) return null;
+    const indentation = this.indentation(opening, 3);
+    if (this.source.slice(indentation.offset, opening.line.contentEnd) !== '$$') return null;
+    let closingIndex = -1;
+    for (let index = start + 1; index < views.length; index += 1) {
+      const view = views[index];
+      if (view === undefined) break;
+      const closeIndentation = this.indentation(view, 3);
+      if (this.source.slice(closeIndentation.offset, view.line.contentEnd) === '$$') {
+        closingIndex = index;
+        break;
+      }
+    }
+    const closing = closingIndex < 0 ? undefined : views[closingIndex];
+    if (closing === undefined) {
+      this.diagnostics.push({
+        code: 'unclosed-math',
+        severity: 'error',
+        message: 'Block math must end with a closing $$ delimiter.',
+        span: span(indentation.offset, opening.line.contentEnd)
+      });
+    }
+    const contentStart = opening.line.end;
+    const contentEnd = closing?.line.start ?? this.source.length;
+    return {
+      block: {
+        kind: 'mathBlock',
+        span: span(indentation.offset, closing?.line.contentEnd ?? this.source.length),
+        value: this.source.slice(contentStart, contentEnd),
+        contentSpan: span(contentStart, contentEnd),
+        openingMarkerSpan: span(indentation.offset, opening.line.contentEnd),
+        closingMarkerSpan: closing === undefined
+          ? null
+          : span(this.indentation(closing, 3).offset, closing.line.contentEnd)
+      },
+      endLine: closingIndex < 0 ? views.length : closingIndex + 1
     };
   }
 
@@ -1270,7 +1466,9 @@ class BlockParser {
 export function parseBlocks(
   source: string,
   views: readonly LineView[],
-  dialect: MarkdownDialect
+  dialect: MarkdownDialect,
+  extensions: ReadonlySet<MarkdownSyntaxExtension>,
+  seed: BlockParseSeed = {}
 ): BlockParseResult {
-  return new BlockParser(source, dialect).parse(views);
+  return new BlockParser(source, dialect, extensions, seed).parse(views);
 }

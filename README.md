@@ -48,7 +48,8 @@ import { parseMarkdown } from 'markspan';
 
 const parsed = parseMarkdown(source, {
   dialect: 'gfm',
-  sourceRetention: 'text'
+  sourceRetention: 'text',
+  extensions: ['frontMatter', 'callouts', 'math']
 });
 
 console.log(parsed.tree.children);
@@ -57,6 +58,17 @@ console.log(parsed.metadata.resourceUsage);
 
 `commonmark` is the default dialect. `gfm` adds tables, task-list markers,
 strikethrough, literal URL/email autolinks, and footnotes.
+
+Extensions are closed, explicit grammar choices:
+
+- `frontMatter` recognizes a leading `---` YAML front-matter block and exposes
+  raw source, entry keys and values, exact marker/key/value spans, and safe
+  diagnostics. It does not execute YAML tags or constructors.
+- `callouts` recognizes the GFM alert labels `NOTE`, `TIP`, `IMPORTANT`,
+  `WARNING`, and `CAUTION` at the start of a blockquote. Unknown labels remain
+  ordinary blockquotes.
+- `math` recognizes escaped-delimiter-aware inline `$…$` and block `$$…$$`
+  syntax with exact marker and content spans and unterminated-block diagnostics.
 
 All offsets are zero-based UTF-16 code-unit offsets. They can be passed directly
 to `String.prototype.slice` and common JavaScript editor APIs.
@@ -78,6 +90,7 @@ if (heading && parsed.sourceText) {
 The tree is a discriminated union. Important block kinds include:
 
 - `heading`, `paragraph`, and `blockQuote`
+- opt-in `frontMatter`, `callout`, and `mathBlock`
 - `list` and `listItem`
 - `codeBlock`, `thematicBreak`, and `htmlBlock`
 - `linkDefinition` and GFM `footnoteDefinition`
@@ -88,6 +101,7 @@ Important inline kinds include:
 - `text`, `escape`, and `characterReference`
 - `emphasis`, `strong`, and GFM `strikethrough`
 - `codeSpan`, `link`, and `image`
+- opt-in `mathInline`
 - `softBreak`, `hardBreak`, `htmlInline`, and GFM `footnoteReference`
 
 Every public node and child array is frozen. Trees have no parent pointers or
@@ -203,9 +217,10 @@ const nextCursor = mapMarkdownOffsetThroughEdits(
 
 `createMarkdownDocumentSession` is a buffer-oriented incremental parser. It
 reparses from the nearest safe blank-line boundary, reuses unchanged node
-objects, and preserves node IDs when unchanged syntax shifts. Documents with
-reference or footnote definitions use a full parse because those definitions
-can change earlier inline interpretation; stable nodes are still reconciled.
+objects, and preserves node IDs when unchanged syntax shifts. Edits after
+stable reference and footnote definitions seed those definitions into the
+reparsed suffix. An edit that changes definition semantics performs a full
+parse because it can change earlier inline interpretation.
 
 ```ts
 import { createMarkdownDocumentSession } from 'markspan';
@@ -214,7 +229,7 @@ const session = createMarkdownDocumentSession(source, { dialect: 'gfm' });
 const update = session.applyEdits(edits);
 console.log(update.snapshot.revision);
 console.log(update.changedOldSpan, update.changedNewSpan);
-console.log(update.strategy, update.parsedSpan, update.reusedNodes);
+console.log(update.instrumentation, update.parsedSpan);
 ```
 
 ## Security boundary
@@ -243,7 +258,8 @@ mapping. It contains no rendering, layout, sanitation, navigation, storage, or
 user-interface policy.
 
 There is intentionally no mdast adapter and no plugin API. The public tree is a
-closed source-aware contract; grammar behavior is selected only by `dialect`.
+closed source-aware contract; grammar behavior is selected by `dialect` and the
+closed `extensions` option.
 
 Consumers decide how syntax nodes become HTML, terminal output, editor
 decorations, search indexes, or another representation.

@@ -20,6 +20,7 @@ export function markdownNodeChildren(node: MarkdownNode): readonly MarkdownNode[
   switch (node.kind) {
     case 'document':
     case 'blockQuote':
+    case 'callout':
     case 'listItem':
       return node.children;
     case 'list':
@@ -39,6 +40,8 @@ export function markdownNodeChildren(node: MarkdownNode): readonly MarkdownNode[
     case 'image':
       return node.children;
     case 'codeBlock':
+    case 'mathBlock':
+    case 'frontMatter':
     case 'thematicBreak':
     case 'htmlBlock':
     case 'linkDefinition':
@@ -46,6 +49,7 @@ export function markdownNodeChildren(node: MarkdownNode): readonly MarkdownNode[
     case 'escape':
     case 'characterReference':
     case 'codeSpan':
+    case 'mathInline':
     case 'softBreak':
     case 'hardBreak':
     case 'htmlInline':
@@ -279,6 +283,7 @@ function inlineText(node: MarkdownInlineNode, collector: TextCollector, options:
       for (const child of node.children) inlineText(child, collector, options);
       return;
     case 'codeSpan':
+    case 'mathInline':
       if (options.code === 'include') collector.add('code', node.value, node, [node.contentSpan]);
       return;
     case 'link':
@@ -325,6 +330,7 @@ function blockText(node: MarkdownBlockNode, collector: TextCollector, options: R
       collector.separator(options.blockSeparator, node);
       return;
     case 'blockQuote':
+    case 'callout':
       for (const child of node.children) blockText(child, collector, options);
       return;
     case 'list':
@@ -334,8 +340,11 @@ function blockText(node: MarkdownBlockNode, collector: TextCollector, options: R
       }
       return;
     case 'codeBlock':
+    case 'mathBlock':
       if (options.code === 'include') collector.add('code', node.value, node, [node.contentSpan]);
       collector.separator(options.blockSeparator, node);
+      return;
+    case 'frontMatter':
       return;
     case 'thematicBreak':
       collector.separator(options.blockSeparator, node);
@@ -383,8 +392,11 @@ export function extractMarkdownTextTokens(
     root.kind === 'paragraph'
     || root.kind === 'heading'
     || root.kind === 'blockQuote'
+    || root.kind === 'callout'
+    || root.kind === 'frontMatter'
     || root.kind === 'list'
     || root.kind === 'codeBlock'
+    || root.kind === 'mathBlock'
     || root.kind === 'thematicBreak'
     || root.kind === 'htmlBlock'
     || root.kind === 'linkDefinition'
@@ -421,6 +433,7 @@ function inlinePlainText(children: readonly MarkdownInlineNode[]): string {
       case 'escape':
       case 'characterReference':
       case 'codeSpan':
+      case 'mathInline':
         return child.value;
       case 'emphasis':
       case 'strong':

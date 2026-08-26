@@ -11,10 +11,12 @@ import type {
   SourceSpan
 } from '../model.js';
 import type { MarkdownDialect } from '../options.js';
+import type { MarkdownSyntaxExtension } from '../options.js';
 import type { BudgetController } from './budget.js';
 import {
   parseBlocks,
   type BlockParseResult,
+  type BlockParseSeed,
   type RawBlock,
   type RawListItem,
   type RawTableCell,
@@ -32,6 +34,8 @@ export interface ConvertedMarkdown {
 
 export interface ConvertOptions {
   readonly dialect: MarkdownDialect;
+  readonly extensions: ReadonlySet<MarkdownSyntaxExtension>;
+  readonly seed: BlockParseSeed;
   readonly sourceOffset: number;
   readonly documentLength: number;
   readonly budget: BudgetController;
@@ -82,6 +86,7 @@ class Emitter {
   private inlineNodes(input: Parameters<typeof parseInline>[0], depth: number): readonly MarkdownInlineNode[] {
     const raw = parseInline(input, {
       dialect: this.options.dialect,
+      extensions: this.options.extensions,
       definitions: this.parsed.definitions,
       footnotes: this.parsed.footnotes,
       budget: this.options.budget,
@@ -121,6 +126,31 @@ class Emitter {
           markerSpans: Object.freeze(raw.markerSpans.map((marker) => this.absolute(marker))),
           children: Object.freeze(raw.children.map((child) => this.block(child, depth + 1)))
         });
+      case 'callout':
+        return Object.freeze({
+          id,
+          kind: 'callout',
+          span,
+          calloutKind: raw.calloutKind,
+          markerSpans: Object.freeze(raw.markerSpans.map((marker) => this.absolute(marker))),
+          labelSpan: this.absolute(raw.labelSpan),
+          children: Object.freeze(raw.children.map((child) => this.block(child, depth + 1)))
+        });
+      case 'frontMatter':
+        return Object.freeze({
+          id,
+          kind: 'frontMatter',
+          span,
+          raw: raw.raw,
+          openingMarkerSpan: this.absolute(raw.openingMarkerSpan),
+          closingMarkerSpan: raw.closingMarkerSpan === null ? null : this.absolute(raw.closingMarkerSpan),
+          entries: Object.freeze(raw.entries.map((entry) => Object.freeze({
+            key: entry.key,
+            value: entry.value,
+            keySpan: this.absolute(entry.keySpan),
+            valueSpan: this.absolute(entry.valueSpan)
+          })))
+        });
       case 'list':
         return Object.freeze({
           id,
@@ -151,6 +181,16 @@ class Emitter {
             openingSpan: this.absolute(raw.fence.openingSpan),
             closingSpan: raw.fence.closingSpan === null ? null : this.absolute(raw.fence.closingSpan)
           })
+        });
+      case 'mathBlock':
+        return Object.freeze({
+          id,
+          kind: 'mathBlock',
+          span,
+          value: raw.value,
+          contentSpan: this.absolute(raw.contentSpan),
+          openingMarkerSpan: this.absolute(raw.openingMarkerSpan),
+          closingMarkerSpan: raw.closingMarkerSpan === null ? null : this.absolute(raw.closingMarkerSpan)
         });
       case 'thematicBreak':
         return Object.freeze({
@@ -286,6 +326,16 @@ class Emitter {
           openingMarkerSpan: this.absolute(raw.openingMarkerSpan),
           closingMarkerSpan: this.absolute(raw.closingMarkerSpan)
         });
+      case 'mathInline':
+        return Object.freeze({
+          id,
+          kind: 'mathInline',
+          span,
+          value: raw.value,
+          contentSpan: this.absolute(raw.contentSpan),
+          openingMarkerSpan: this.absolute(raw.openingMarkerSpan),
+          closingMarkerSpan: this.absolute(raw.closingMarkerSpan)
+        });
       case 'link':
         return Object.freeze({
           id,
@@ -338,7 +388,12 @@ class Emitter {
 
 export function convertMarkdown(source: string, options: ConvertOptions): ConvertedMarkdown {
   const lines = scanSourceLines(source);
-  const parsed = parseBlocks(source, rootLineViews(lines), options.dialect);
+  const parsed = parseBlocks(
+    source,
+    rootLineViews(lines),
+    options.dialect,
+    options.extensions,
+    options.seed
+  );
   return new Emitter(parsed, options).emit();
 }
-

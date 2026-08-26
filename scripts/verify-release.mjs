@@ -3,25 +3,22 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 
-const execute = promisify(execFile);
 const temporary = await mkdtemp(join(tmpdir(), 'markspan-release-'));
 const firstDirectory = join(temporary, 'first');
 const secondDirectory = join(temporary, 'second');
 
 async function pack(destination) {
-  const { stdout } = await execute('npm', [
-    'pack',
-    '--json',
-    '--ignore-scripts',
-    '--pack-destination',
-    destination
-  ], { cwd: new URL('../', import.meta.url) });
+  const npmCli = process.env['npm_execpath'];
+  if (npmCli === undefined) throw new Error('npm_execpath is required to verify the release package.');
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', destination], {
+      cwd: new URL('../', import.meta.url)
+    }, (error, output) => error === null ? resolve(output) : reject(error));
+  });
   const report = JSON.parse(stdout);
-  assert.deepEqual(Object.keys(report), ['markspan']);
-  const result = report.markspan;
+  const result = Array.isArray(report) ? report[0] : undefined;
   assert(result?.filename);
   assert.equal(result.name, 'markspan');
   return {

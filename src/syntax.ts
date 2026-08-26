@@ -4,6 +4,10 @@ import { walkMarkdown } from './analysis.js';
 export type MarkdownSyntaxTokenKind =
   | 'headingMarker'
   | 'quoteMarker'
+  | 'calloutLabel'
+  | 'frontMatterMarker'
+  | 'frontMatterKey'
+  | 'frontMatterValue'
   | 'listMarker'
   | 'taskMarker'
   | 'codeFence'
@@ -21,6 +25,8 @@ export type MarkdownSyntaxTokenKind =
   | 'strikethroughMarker'
   | 'codeSpanMarker'
   | 'codeSpanContent'
+  | 'mathMarker'
+  | 'mathContent'
   | 'linkDestination'
   | 'linkLabel'
   | 'imageDestination'
@@ -54,6 +60,18 @@ export function collectMarkdownSyntaxTokens(root: MarkdownNode): readonly Markdo
       case 'blockQuote':
         for (const marker of node.markerSpans) tokens.push(token('quoteMarker', marker, node.id));
         break;
+      case 'callout':
+        for (const marker of node.markerSpans) tokens.push(token('quoteMarker', marker, node.id));
+        tokens.push(token('calloutLabel', node.labelSpan, node.id));
+        break;
+      case 'frontMatter':
+        tokens.push(token('frontMatterMarker', node.openingMarkerSpan, node.id));
+        if (node.closingMarkerSpan !== null) tokens.push(token('frontMatterMarker', node.closingMarkerSpan, node.id));
+        for (const entry of node.entries) {
+          tokens.push(token('frontMatterKey', entry.keySpan, node.id));
+          tokens.push(token('frontMatterValue', entry.valueSpan, node.id));
+        }
+        break;
       case 'listItem':
         tokens.push(token('listMarker', node.markerSpan, node.id));
         if (node.task !== null) tokens.push(token('taskMarker', node.task.span, node.id));
@@ -65,6 +83,11 @@ export function collectMarkdownSyntaxTokens(root: MarkdownNode): readonly Markdo
           if (node.fence.closingSpan !== null) tokens.push(token('codeFence', node.fence.closingSpan, node.id));
           if (node.infoSpan !== null) tokens.push(token('codeInfo', node.infoSpan, node.id));
         }
+        break;
+      case 'mathBlock':
+        tokens.push(token('mathMarker', node.openingMarkerSpan, node.id));
+        if (node.closingMarkerSpan !== null) tokens.push(token('mathMarker', node.closingMarkerSpan, node.id));
+        tokens.push(token('mathContent', node.contentSpan, node.id));
         break;
       case 'thematicBreak':
         tokens.push(token('thematicBreak', node.markerSpan, node.id));
@@ -101,6 +124,11 @@ export function collectMarkdownSyntaxTokens(root: MarkdownNode): readonly Markdo
         tokens.push(token('codeSpanMarker', node.openingMarkerSpan, node.id));
         tokens.push(token('codeSpanMarker', node.closingMarkerSpan, node.id));
         tokens.push(token('codeSpanContent', node.contentSpan, node.id));
+        break;
+      case 'mathInline':
+        tokens.push(token('mathMarker', node.openingMarkerSpan, node.id));
+        tokens.push(token('mathMarker', node.closingMarkerSpan, node.id));
+        tokens.push(token('mathContent', node.contentSpan, node.id));
         break;
       case 'link':
         if (node.destinationSpan !== null) tokens.push(token('linkDestination', node.destinationSpan, node.id));

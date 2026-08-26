@@ -2,7 +2,7 @@ import type {
   MarkdownLinkForm,
   SourceSpan
 } from '../model.js';
-import type { MarkdownDialect } from '../options.js';
+import type { MarkdownDialect, MarkdownSyntaxExtension } from '../options.js';
 import type { BudgetController } from './budget.js';
 import { decodeMarkdownString, isEscapable, parseCharacterReference } from './decode.js';
 import type { InlineSource } from './source-reader.js';
@@ -35,6 +35,12 @@ export interface RawContainer extends RawInlineBase<'emphasis' | 'strong' | 'str
   readonly children: readonly RawInlineNode[];
 }
 export interface RawCodeSpan extends RawInlineBase<'codeSpan'> {
+  readonly value: string;
+  readonly contentSpan: SourceSpan;
+  readonly openingMarkerSpan: SourceSpan;
+  readonly closingMarkerSpan: SourceSpan;
+}
+export interface RawMathInline extends RawInlineBase<'mathInline'> {
   readonly value: string;
   readonly contentSpan: SourceSpan;
   readonly openingMarkerSpan: SourceSpan;
@@ -78,6 +84,7 @@ export type RawInlineNode =
   | RawCharacterReference
   | RawContainer
   | RawCodeSpan
+  | RawMathInline
   | RawLink
   | RawImage
   | RawSoftBreak
@@ -144,6 +151,7 @@ interface LinkResolution {
 
 export interface InlineParseOptions {
   readonly dialect: MarkdownDialect;
+  readonly extensions: ReadonlySet<MarkdownSyntaxExtension>;
   readonly definitions: ReadonlyMap<string, InlineDefinitionTarget>;
   readonly footnotes: ReadonlyMap<string, InlineFootnoteTarget>;
   readonly budget: BudgetController;
@@ -195,6 +203,23 @@ function countRun(value: string, start: number, marker: string): number {
   let end = start;
   while (value[end] === marker) end += 1;
   return end - start;
+}
+
+function inlineMathEnd(value: string, start: number, end: number): number | null {
+  if (value[start] !== '$'
+    || value[start + 1] === '$'
+    || isWhitespace(value[start + 1])) return null;
+  for (let cursor = start + 1; cursor < end; cursor += 1) {
+    const character = value[cursor];
+    if (character === '\n' || character === '\r') return null;
+    if (character === '\\') {
+      cursor += 1;
+      continue;
+    }
+    if (character !== '$' || value[cursor + 1] === '$' || isWhitespace(value[cursor - 1])) continue;
+    return cursor;
+  }
+  return null;
 }
 
 function backtickClosers(value: string, start: number, end: number): ReadonlyMap<number, number> {
@@ -360,6 +385,7 @@ function plainText(nodes: readonly RawInlineNode[]): string {
       case 'escape':
       case 'characterReference':
       case 'codeSpan':
+      case 'mathInline':
         result += node.value;
         break;
       case 'softBreak':
@@ -486,6 +512,27 @@ class InlineParser {
         }
         cursor += length;
         continue;
+      }
+
+      if (character === '$' && this.options.extensions.has('math')) {
+        const closing = inlineMathEnd(this.value, cursor, end);
+        if (closing !== null) {
+          const tokenEnd = closing + 1;
+          specials.push({
+            start: cursor,
+            end: tokenEnd,
+            node: {
+              kind: 'mathInline',
+              span: this.input.span(cursor, tokenEnd),
+              value: this.value.slice(cursor + 1, closing),
+              contentSpan: this.input.span(cursor + 1, closing),
+              openingMarkerSpan: this.input.span(cursor, cursor + 1),
+              closingMarkerSpan: this.input.span(closing, tokenEnd)
+            }
+          });
+          cursor = tokenEnd;
+          continue;
+        }
       }
 
       const image = character === '!' && this.value[cursor + 1] === '[';
