@@ -89,6 +89,7 @@
     "check": "npm run typecheck && npm test && npm run test:fuzz && npm run test:types && npm run test:conformance && npm run test:jsr && node scripts-check-package.mjs",
     "verify": "npm run check && npm run test:browser && npm run test:deno && npm run test:bun && npm run test:release && npm pack --dry-run",
     "publish:jsr": "jsr publish",
+    "prepare": "npm run build",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check"
   },
