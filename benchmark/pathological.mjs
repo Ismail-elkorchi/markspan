@@ -5,6 +5,7 @@ const cases = {
   emphasisRuns: `${'*'.repeat(8_000)}a${'*'.repeat(8_000)}`,
   unmatchedBrackets: `${'['.repeat(4_000)}x${']'.repeat(4_000)}`,
   longCodeFence: `${'`'.repeat(8_000)} value ${'`'.repeat(8_000)}`,
+  largeMultilineParagraph: `not-a-fence\n${'const value = 1;\n'.repeat(15_000)}`,
   tabIndented: `${'\tvalue\tsemantic\n'.repeat(10_000)}`,
   manyBlocks: Array.from({ length: 5_000 }, (_, index) => `block ${index}\n\n`).join('')
 };

@@ -94,28 +94,37 @@ export class InlineSource {
   }
 
   private startOffset(index: number): number {
-    for (const segment of this.segments) {
-      if (index >= segment.logicalStart && index < segment.logicalEnd) {
-        if (segment.logicalEnd - segment.logicalStart === segment.sourceEnd - segment.sourceStart) {
-          return segment.sourceStart + index - segment.logicalStart;
-        }
-        return segment.sourceStart;
+    let lower = 0;
+    let upper = this.segments.length;
+    while (lower < upper) {
+      const middle = Math.floor((lower + upper) / 2);
+      if ((this.segments[middle]?.logicalEnd ?? Number.POSITIVE_INFINITY) <= index) lower = middle + 1;
+      else upper = middle;
+    }
+    const segment = this.segments[lower];
+    if (segment !== undefined && index >= segment.logicalStart && index < segment.logicalEnd) {
+      if (segment.logicalEnd - segment.logicalStart === segment.sourceEnd - segment.sourceStart) {
+        return segment.sourceStart + index - segment.logicalStart;
       }
-      if (index === segment.logicalStart) return segment.sourceStart;
+      return segment.sourceStart;
     }
     return this.segments.at(-1)?.sourceEnd ?? 0;
   }
 
   private endOffset(index: number): number {
-    for (let cursor = this.segments.length - 1; cursor >= 0; cursor -= 1) {
-      const segment = this.segments[cursor];
-      if (segment === undefined) continue;
-      if (index > segment.logicalStart && index <= segment.logicalEnd) {
-        if (segment.logicalEnd - segment.logicalStart === segment.sourceEnd - segment.sourceStart) {
-          return segment.sourceStart + index - segment.logicalStart;
-        }
-        return segment.sourceEnd;
+    let lower = 0;
+    let upper = this.segments.length;
+    while (lower < upper) {
+      const middle = Math.floor((lower + upper) / 2);
+      if ((this.segments[middle]?.logicalEnd ?? Number.POSITIVE_INFINITY) < index) lower = middle + 1;
+      else upper = middle;
+    }
+    const segment = this.segments[lower];
+    if (segment !== undefined && index > segment.logicalStart && index <= segment.logicalEnd) {
+      if (segment.logicalEnd - segment.logicalStart === segment.sourceEnd - segment.sourceStart) {
+        return segment.sourceStart + index - segment.logicalStart;
       }
+      return segment.sourceEnd;
     }
     return this.segments[0]?.sourceStart ?? 0;
   }

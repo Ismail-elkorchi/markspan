@@ -207,3 +207,17 @@ test('unknown callouts remain block quotes and unclosed extension blocks report 
   assert.equal(unclosed.tree.children[0]?.kind, 'frontMatter');
   assert.equal(unclosed.diagnostics[0]?.code, 'unclosed-front-matter');
 });
+
+test('large multiline paragraphs retain exact soft-break spans', () => {
+  const line = 'const value = 1;';
+  const source = `${line}\n`.repeat(15_000);
+  const parsed = parseMarkdown(source, { dialect: 'gfm' });
+  const paragraph = parsed.tree.children[0];
+  assert.equal(paragraph?.kind, 'paragraph');
+  if (paragraph?.kind !== 'paragraph') return;
+  const breaks = paragraph.children.filter((node) => node.kind === 'softBreak');
+  assert.equal(breaks.length, 14_999);
+  assert.equal(source.slice(breaks[0]?.span.start, breaks[0]?.span.end), '\n');
+  assert.equal(source.slice(breaks.at(-1)?.span.start, breaks.at(-1)?.span.end), '\n');
+  assert.equal(paragraph.children.length, 29_999);
+});
