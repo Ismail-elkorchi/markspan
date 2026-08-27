@@ -65,6 +65,10 @@ test('incremental edits are structurally identical to a clean parse', () => {
       const clean = parseMarkdown(update.snapshot.source, { dialect });
       const normalize = (value) => JSON.stringify(value, (key, entry) => key === 'id' ? 0 : entry);
       assert.equal(normalize(update.snapshot.document.tree), normalize(clean.tree));
+      assert.deepEqual(update.snapshot.document.metadata, clean.metadata);
+      assert.deepEqual(update.snapshot.document.definitions.map(({ nodeId: _nodeId, ...entry }) => entry), clean.definitions.map(({ nodeId: _nodeId, ...entry }) => entry));
+      assert.deepEqual(update.snapshot.document.footnotes.map(({ nodeId: _nodeId, ...entry }) => entry), clean.footnotes.map(({ nodeId: _nodeId, ...entry }) => entry));
+      assert(update.instrumentation.reusedNodes <= update.snapshot.document.metadata.nodeCount);
       assertPositionInvariants(update.snapshot.document, update.snapshot.source);
     }
   ), { numRuns: 75, seed: 0x1cedb10c });

@@ -62,8 +62,9 @@ strikethrough, literal URL/email autolinks, and footnotes.
 Extensions are closed, explicit grammar choices:
 
 - `frontMatter` recognizes a leading `---` YAML front-matter block and exposes
-  raw source, entry keys and values, exact marker/key/value spans, and safe
-  diagnostics. It does not execute YAML tags or constructors.
+  raw source plus an immutable tree of mappings, sequences, quoted/plain/block
+  scalars, exact marker/key/value spans, and deterministic diagnostics. Tags,
+  anchors, aliases, and constructors are diagnosed and never executed.
 - `callouts` recognizes the GFM alert labels `NOTE`, `TIP`, `IMPORTANT`,
   `WARNING`, and `CAUTION` at the start of a blockquote. Unknown labels remain
   ordinary blockquotes.
@@ -107,6 +108,11 @@ Important inline kinds include:
 Every public node and child array is frozen. Trees have no parent pointers or
 process-global cache. Use traversal helpers when parent/depth information is
 needed.
+
+Code blocks expose `valueSourceMap`, which maps their normalized `value` back
+to exact source spans across LF, CRLF, CR, stripped indentation, tab-derived
+virtual spaces, and empty lines. Use `markdownCodeValueSourceSpan()` to map a
+half-open value range without reconstructing fence rules in a consumer.
 
 ```ts
 import { walkMarkdown } from 'markspan';
@@ -216,11 +222,11 @@ const nextCursor = mapMarkdownOffsetThroughEdits(
 ```
 
 `createMarkdownDocumentSession` is a buffer-oriented incremental parser. It
-reparses from the nearest safe blank-line boundary, reuses unchanged node
-objects, and preserves node IDs when unchanged syntax shifts. Edits after
-stable reference and footnote definitions seed those definitions into the
-reparsed suffix. An edit that changes definition semantics performs a full
-parse because it can change earlier inline interpretation.
+reuses syntax-neutral text and code units inside paragraphs, lists,
+blockquotes, tables, and code blocks without invoking the block parser. Other
+edits reparse from a parser-owned safe boundary. Unchanged syntax preserves
+node IDs when spans shift. Definition-semantic edits perform a full parse
+because they can change earlier inline interpretation.
 
 ```ts
 import { createMarkdownDocumentSession } from 'markspan';

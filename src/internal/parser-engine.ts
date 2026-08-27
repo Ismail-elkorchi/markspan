@@ -3,6 +3,7 @@ import type {
   MarkdownDiagnostic,
   MarkdownDocumentNode,
   MarkdownFootnoteDefinition,
+  MarkdownFrontMatterValue,
   MarkdownInlineNode,
   MarkdownNode,
   MarkdownReferenceDefinition,
@@ -83,6 +84,30 @@ class Emitter {
     return freezeSpan(value, this.options.sourceOffset);
   }
 
+  private frontMatterValue(value: MarkdownFrontMatterValue): MarkdownFrontMatterValue {
+    switch (value.kind) {
+      case 'scalar':
+        return Object.freeze({ ...value, span: this.absolute(value.span) });
+      case 'sequence':
+        return Object.freeze({
+          kind: 'sequence',
+          span: this.absolute(value.span),
+          items: Object.freeze(value.items.map((item) => this.frontMatterValue(item)))
+        });
+      case 'mapping':
+        return Object.freeze({
+          kind: 'mapping',
+          span: this.absolute(value.span),
+          entries: Object.freeze(value.entries.map((entry) => Object.freeze({
+            key: entry.key,
+            keySpan: this.absolute(entry.keySpan),
+            valueSpan: this.absolute(entry.valueSpan),
+            value: this.frontMatterValue(entry.value)
+          })))
+        });
+    }
+  }
+
   private inlineNodes(input: Parameters<typeof parseInline>[0], depth: number): readonly MarkdownInlineNode[] {
     const raw = parseInline(input, {
       dialect: this.options.dialect,
@@ -144,12 +169,7 @@ class Emitter {
           raw: raw.raw,
           openingMarkerSpan: this.absolute(raw.openingMarkerSpan),
           closingMarkerSpan: raw.closingMarkerSpan === null ? null : this.absolute(raw.closingMarkerSpan),
-          entries: Object.freeze(raw.entries.map((entry) => Object.freeze({
-            key: entry.key,
-            value: entry.value,
-            keySpan: this.absolute(entry.keySpan),
-            valueSpan: this.absolute(entry.valueSpan)
-          })))
+          value: raw.value === null ? null : this.frontMatterValue(raw.value)
         });
       case 'list':
         return Object.freeze({
@@ -171,6 +191,15 @@ class Emitter {
           style: raw.style,
           value: raw.value,
           contentSpan: this.absolute(raw.contentSpan),
+          valueSourceMap: Object.freeze({
+            valueLength: raw.valueSourceMap.valueLength,
+            segments: Object.freeze(raw.valueSourceMap.segments.map((segment) => Object.freeze({
+              kind: segment.kind,
+              valueStart: segment.valueStart,
+              valueEnd: segment.valueEnd,
+              sourceSpan: this.absolute(segment.sourceSpan)
+            })))
+          }),
           info: raw.info,
           infoSpan: raw.infoSpan === null ? null : this.absolute(raw.infoSpan),
           language: raw.language,

@@ -1,6 +1,7 @@
 import type {
   MarkdownBulletMarker,
   MarkdownCalloutKind,
+  MarkdownCodeValueSourceSegment,
   MarkdownDiagnostic,
   MarkdownHtmlBlockType,
   MarkdownListDelimiter,
@@ -10,6 +11,8 @@ import type {
 import type { MarkdownDialect, MarkdownSyntaxExtension } from '../options.js';
 import { decodeMarkdownString } from './decode.js';
 import type { InlineDefinitionTarget, InlineFootnoteTarget } from './inline-parser.js';
+import { parseSafeYamlFrontMatter } from './yaml-front-matter.js';
+import { normalizeMarkdownIdentifier } from './identifier.js';
 import {
   InlineSource,
   consumeIndent,
@@ -53,12 +56,7 @@ export interface RawFrontMatter extends RawBlockBase<'frontMatter'> {
   readonly raw: string;
   readonly openingMarkerSpan: SourceSpan;
   readonly closingMarkerSpan: SourceSpan | null;
-  readonly entries: readonly {
-    readonly key: string;
-    readonly value: string;
-    readonly keySpan: SourceSpan;
-    readonly valueSpan: SourceSpan;
-  }[];
+  readonly value: import('../model.js').MarkdownFrontMatterValue | null;
 }
 
 export interface RawListItem extends RawBlockBase<'listItem'> {
@@ -82,6 +80,10 @@ export interface RawCodeBlock extends RawBlockBase<'codeBlock'> {
   readonly style: 'fenced' | 'indented';
   readonly value: string;
   readonly contentSpan: SourceSpan;
+  readonly valueSourceMap: {
+    readonly valueLength: number;
+    readonly segments: readonly MarkdownCodeValueSourceSegment[];
+  };
   readonly info: string | null;
   readonly infoSpan: SourceSpan | null;
   readonly language: string | null;
@@ -221,21 +223,69 @@ function span(start: number, end: number): SourceSpan {
   return { start, end };
 }
 
-function normalizeLabel(value: string): string {
-  return value
-    .replace(/[\t\n\r ]+/gu, ' ')
-    .replace(/^ | $/gu, '')
-    .toLowerCase()
-    .toUpperCase()
-    .toLowerCase();
-}
-
 function lineWithEnd(line: SourceLine, end: number): SourceLine {
   return { start: line.start, contentEnd: end, end: line.end };
 }
 
 function replaceViewBounds(view: LineView, start: number, end = view.line.contentEnd): LineView {
   return { line: lineWithEnd(view.line, end), contentStart: start, virtualColumn: 0, virtualSpaces: 0 };
+}
+
+function codeValue(
+  source: string,
+  views: readonly LineView[]
+): { readonly value: string; readonly valueSourceMap: RawCodeBlock['valueSourceMap'] } {
+  let value = '';
+  const segments: MarkdownCodeValueSourceSegment[] = [];
+  for (let index = 0; index < views.length; index += 1) {
+    const view = views[index];
+    if (view === undefined) continue;
+    const virtualSpaces = view.virtualSpaces ?? 0;
+    if (virtualSpaces > 0) {
+      const valueStart = value.length;
+      value += ' '.repeat(virtualSpaces);
+      segments.push({
+        kind: 'virtualSpaces',
+        valueStart,
+        valueEnd: value.length,
+        sourceSpan: view.virtualSourceSpan ?? span(view.contentStart, view.contentStart)
+      });
+    }
+    if (view.contentStart < view.line.contentEnd) {
+      const valueStart = value.length;
+      value += source.slice(view.contentStart, view.line.contentEnd);
+      segments.push({
+        kind: 'text',
+        valueStart,
+        valueEnd: value.length,
+        sourceSpan: span(view.contentStart, view.line.contentEnd)
+      });
+    } else if (virtualSpaces === 0) {
+      segments.push({
+        kind: 'emptyLine',
+        valueStart: value.length,
+        valueEnd: value.length,
+        sourceSpan: span(view.contentStart, view.contentStart)
+      });
+    }
+    if (view.line.end > view.line.contentEnd) {
+      const valueStart = value.length;
+      value += '\n';
+      segments.push({
+        kind: 'lineEnding',
+        valueStart,
+        valueEnd: value.length,
+        sourceSpan: span(view.line.contentEnd, view.line.end)
+      });
+    }
+  }
+  return {
+    value,
+    valueSourceMap: {
+      valueLength: value.length,
+      segments
+    }
+  };
 }
 
 class BlockParser {
@@ -425,7 +475,8 @@ class BlockParser {
           line: view.line,
           contentStart,
           virtualColumn: sourceColumnAt(this.source, view.line.start, contentStart),
-          virtualSpaces
+          virtualSpaces,
+          ...(virtualSpaces === 0 ? {} : { virtualSourceSpan: span(contentStart - 1, contentStart) })
         };
         children.push(child);
         lastContentEnd = view.line.contentEnd;
@@ -485,42 +536,6 @@ class BlockParser {
         break;
       }
     }
-    const contentViews = views.slice(1, closingIndex < 0 ? views.length : closingIndex);
-    const entries: RawFrontMatter['entries'][number][] = [];
-    for (const view of contentViews) {
-      const line = this.source.slice(view.contentStart, view.line.contentEnd);
-      if (/^[ \t]*(?:#.*)?$/u.test(line)) continue;
-      const match = /^([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*:[ \t]*(.*?)[ \t]*$/u.exec(line);
-      if (match === null || match[1] === undefined || match[2] === undefined) {
-        this.diagnostics.push({
-          code: 'invalid-front-matter',
-          severity: 'error',
-          message: 'Front matter entries must use a plain key followed by a colon and a value.',
-          span: span(view.contentStart, view.line.contentEnd)
-        });
-        continue;
-      }
-      const keyStart = view.contentStart + (match.index ?? 0);
-      const colon = line.indexOf(':', match[1].length);
-      let valueStart = view.contentStart + colon + 1;
-      while (valueStart < view.line.contentEnd && /[ \t]/u.test(this.source[valueStart] ?? '')) valueStart += 1;
-      let valueEnd = view.line.contentEnd;
-      while (valueEnd > valueStart && /[ \t]/u.test(this.source[valueEnd - 1] ?? '')) valueEnd -= 1;
-      if (this.source[valueStart] === '!') {
-        this.diagnostics.push({
-          code: 'invalid-front-matter',
-          severity: 'error',
-          message: 'YAML tags are not supported in front matter.',
-          span: span(valueStart, valueEnd)
-        });
-      }
-      entries.push({
-        key: match[1],
-        value: this.source.slice(valueStart, valueEnd),
-        keySpan: span(keyStart, keyStart + match[1].length),
-        valueSpan: span(valueStart, valueEnd)
-      });
-    }
     const closing = closingIndex < 0 ? null : views[closingIndex];
     if (closing === null || closing === undefined) {
       this.diagnostics.push({
@@ -532,6 +547,8 @@ class BlockParser {
     }
     const contentStart = opening.line.end;
     const contentEnd = closing?.line.start ?? this.source.length;
+    const yaml = parseSafeYamlFrontMatter(this.source, contentStart, contentEnd);
+    this.diagnostics.push(...yaml.diagnostics);
     return {
       block: {
         kind: 'frontMatter',
@@ -541,7 +558,7 @@ class BlockParser {
         closingMarkerSpan: closing === undefined || closing === null
           ? null
           : span(closing.contentStart, closing.line.contentEnd),
-        entries
+        value: yaml.value
       },
       endLine: closingIndex < 0 ? views.length : closingIndex + 1
     };
@@ -617,7 +634,7 @@ class BlockParser {
     if (openingView === undefined) return null;
     const opening = this.fenceOpening(openingView);
     if (opening === null) return null;
-    const content: Array<{ readonly view: LineView; readonly start: number }> = [];
+    const content: LineView[] = [];
     let closingSpan: SourceSpan | null = null;
     let index = start + 1;
     let blockEnd = opening.markerEnd;
@@ -635,19 +652,16 @@ class BlockParser {
           break;
         }
       }
-      const stripped = consumeIndent(this.source, view, opening.contentIndentation);
-      content.push({ view, start: stripped.offset });
+      content.push(this.stripIndent(view, opening.contentIndentation).view);
       blockEnd = view.line.contentEnd;
       index += 1;
     }
-    const values = content.map(({ view, start: contentStart }) => (
-      ' '.repeat(view.virtualSpaces ?? 0) + this.source.slice(contentStart, view.line.contentEnd)
-    ));
+    const mappedValue = codeValue(this.source, content);
     const first = content[0];
     const last = content.at(-1);
     const contentSpan = first === undefined || last === undefined
       ? span(openingView.line.contentEnd, openingView.line.contentEnd)
-      : span(first.start, last.view.line.contentEnd);
+      : span(first.contentStart, last.line.contentEnd);
     const rawInfo = this.source.slice(opening.infoStart, opening.infoEnd);
     const info = rawInfo.length === 0 ? null : decodeMarkdownString(rawInfo);
     const language = info?.split(/[ \t\n]+/u)[0] || null;
@@ -656,8 +670,9 @@ class BlockParser {
         kind: 'codeBlock',
         span: span(opening.markerStart, blockEnd),
         style: 'fenced',
-        value: values.join('\n'),
+        value: mappedValue.value,
         contentSpan,
+        valueSourceMap: mappedValue.valueSourceMap,
         info,
         infoSpan: info === null ? null : span(opening.infoStart, opening.infoEnd),
         language,
@@ -795,11 +810,12 @@ class BlockParser {
       && left.bullet === right.bullet;
   }
 
-  private stripRequiredIndent(view: LineView, columns: number): LineView | null {
+  private stripIndent(view: LineView, columns: number): { readonly view: LineView; readonly consumed: number } {
     let offset = view.contentStart;
     let consumed = Math.min(view.virtualSpaces ?? 0, columns);
     let virtualSpaces = Math.max(0, (view.virtualSpaces ?? 0) - columns);
     let sourceColumn = view.virtualColumn;
+    let virtualSourceSpan = virtualSpaces > 0 ? view.virtualSourceSpan : undefined;
     while (offset < view.line.contentEnd && consumed < columns) {
       const character = this.source[offset];
       let width: number;
@@ -807,17 +823,29 @@ class BlockParser {
       else if (character === '\t') width = 4 - sourceColumn % 4;
       else break;
       const needed = columns - consumed;
-      if (width > needed) virtualSpaces += width - needed;
+      if (width > needed) {
+        virtualSpaces += width - needed;
+        virtualSourceSpan = span(offset, offset + 1);
+      }
       consumed += width;
       sourceColumn += width;
       offset += 1;
     }
-    return consumed < columns ? null : {
-      line: view.line,
-      contentStart: offset,
-      virtualColumn: sourceColumn,
-      virtualSpaces
+    return {
+      consumed,
+      view: {
+        line: view.line,
+        contentStart: offset,
+        virtualColumn: sourceColumn,
+        virtualSpaces,
+        ...(virtualSpaces === 0 || virtualSourceSpan === undefined ? {} : { virtualSourceSpan })
+      }
     };
+  }
+
+  private stripRequiredIndent(view: LineView, columns: number): LineView | null {
+    const stripped = this.stripIndent(view, columns);
+    return stripped.consumed < columns ? null : stripped.view;
   }
 
   private list(views: readonly LineView[], start: number): { readonly block: RawList; readonly endLine: number } | null {
@@ -839,7 +867,10 @@ class BlockParser {
         line: itemView.line,
         contentStart: marker.contentStart,
         virtualColumn: sourceColumnAt(this.source, itemView.line.start, marker.contentStart),
-        virtualSpaces: marker.contentVirtualSpaces
+        virtualSpaces: marker.contentVirtualSpaces,
+        ...(marker.contentVirtualSpaces === 0
+          ? {}
+          : { virtualSourceSpan: span(marker.contentStart - 1, marker.contentStart) })
       }];
       let itemEnd = itemView.line.contentEnd;
       let itemSpread = false;
@@ -965,15 +996,15 @@ class BlockParser {
     }
     while (lines.length > 0 && isBlankView(this.source, lines.at(-1) ?? first)) lines.pop();
     const last = lines.at(-1) ?? firstContent;
+    const mappedValue = codeValue(this.source, lines);
     return {
       block: {
         kind: 'codeBlock',
         span: span(first.contentStart, last.line.contentEnd),
         style: 'indented',
-        value: lines.map((view) => (
-          ' '.repeat(view.virtualSpaces ?? 0) + this.source.slice(view.contentStart, view.line.contentEnd)
-        )).join('\n'),
+        value: mappedValue.value,
         contentSpan: span(firstContent.contentStart, last.line.contentEnd),
+        valueSourceMap: mappedValue.valueSourceMap,
         info: null,
         infoSpan: null,
         language: null,
@@ -1133,7 +1164,7 @@ class BlockParser {
     let endLine = start + 1;
     while (endLine < views.length && (views[endLine - 1]?.line.contentEnd ?? Number.POSITIVE_INFINITY) < definitionSpan.end) endLine += 1;
     const rawLabel = value.slice(labelStart, labelEnd);
-    const normalizedLabel = normalizeLabel(rawLabel);
+    const normalizedLabel = normalizeMarkdownIdentifier(rawLabel);
     if (normalizedLabel.length === 0) return null;
     return {
       endLine,
@@ -1192,7 +1223,7 @@ class BlockParser {
       index += 1;
     }
     const rawLabel = match[1];
-    const normalized = normalizeLabel(rawLabel);
+    const normalized = normalizeMarkdownIdentifier(rawLabel);
     const block: RawFootnoteDefinition = {
       kind: 'footnoteDefinition',
       span: span(indentation.offset, blockEnd),

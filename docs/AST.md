@@ -10,6 +10,13 @@ A semantic value may be normalized while its span still points to the original
 spelling. Examples include decoded character references, escaped punctuation,
 code-span whitespace normalization, and code-block line-ending normalization.
 
+`MarkdownCodeBlockNode.valueSourceMap` is the exact exception to the
+single-span approximation: its monotonic segments record normalized value
+offsets and absolute source spans for text, virtual spaces, line endings, and
+empty lines. `markdownCodeValueSourceSpan()` maps any half-open value range to
+the smallest enclosing source span. Consumers do not need to reproduce fence
+indentation or line-ending rules.
+
 Tabs advance to four-column stops only in the block parser's virtual indentation
 model. Semantic values are produced from the original token content: removing
 an indentation tab never expands later tabs into spaces. Because a tab occupies
@@ -31,6 +38,12 @@ Marker-specific ranges are available where editors need them:
 - code fences and code-span markers
 - hard-break markers
 - definition labels, destinations, and titles
+
+Front matter exposes a recursive, non-executing YAML value tree. Mapping
+entries retain exact key and value spans; mappings, sequences, and scalar
+values retain their own spans. Plain, quoted, literal, and folded scalar styles
+are explicit. Unsupported tags, anchors, and aliases produce deterministic
+diagnostics rather than executable values.
 
 Lists expose both levels of CommonMark looseness. `list.tight` describes how a
 renderer treats the list as a whole, while each `listItem.spread` records

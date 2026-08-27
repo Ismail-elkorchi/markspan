@@ -1,4 +1,6 @@
 import type { SourceSpan } from './model.js';
+import { mapOrderedSourceOffset } from './internal/edit-offset.js';
+import { recordMarkdownSourceIndexScanLength } from './internal/source-index-instrumentation.js';
 
 export interface SourcePosition {
   readonly offset: number;
@@ -41,7 +43,7 @@ function freezeSpan(start: number, end: number): SourceSpan {
 /** Build a line/column index without normalizing the source text. */
 export function createMarkdownSourceIndex(source: string): MarkdownSourceIndex {
   if (typeof source !== 'string') throw new TypeError('source must be a string.');
-  return sourceIndex(source, scanLines(source));
+  return sourceIndex(source, scanLines(source), source.length);
 }
 
 /** Update line positions by rescanning only lines adjacent to an exact edit set. */
@@ -53,13 +55,57 @@ export function updateMarkdownSourceIndex(
   const data = sourceIndexData.get(previous);
   if (data === undefined) throw new TypeError('previous must be a Markspan source index.');
   if (typeof source !== 'string') throw new TypeError('source must be a string.');
-  if (!Array.isArray(edits) || edits.length === 0) return previous;
-  const sorted = [...edits].sort((left, right) => left.span.start - right.span.start || left.span.end - right.span.end);
-  for (let index = 0; index < sorted.length; index += 1) {
-    const edit = sorted[index];
-    if (edit === undefined || typeof edit.text !== 'string') throw new TypeError(`edit ${String(index)} is invalid.`);
+  if (!Array.isArray(edits)) throw new TypeError('edits must be an array.');
+  if (edits.length === 0) {
+    if (source.length !== previous.length) throw new RangeError('source length cannot change without an edit.');
+    return previous;
+  }
+  const validated = edits.map((edit, index) => {
+    if (typeof edit !== 'object' || edit === null || typeof edit.text !== 'string') {
+      throw new TypeError(`edit ${String(index)} is invalid.`);
+    }
     assertSourceSpan(edit.span, previous.length);
-    if (index > 0 && edit.span.start < (sorted[index - 1]?.span.end ?? 0)) throw new RangeError('source index edits overlap.');
+    return edit;
+  });
+  const sorted = validated.sort((left, right) => left.span.start - right.span.start || left.span.end - right.span.end);
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previousEdit = sorted[index - 1];
+    const edit = sorted[index];
+    if (edit === undefined || previousEdit === undefined) continue;
+    const overlaps = edit.span.start < previousEdit.span.end;
+    const sharesReplacementBoundary = edit.span.start === previousEdit.span.start
+      && (edit.span.end > edit.span.start || previousEdit.span.end > previousEdit.span.start);
+    if (overlaps || sharesReplacementBoundary) throw new RangeError('source index edits overlap.');
+  }
+  const expectedLength = previous.length + sorted.reduce(
+    (length, edit) => length + edit.text.length - (edit.span.end - edit.span.start),
+    0
+  );
+  if (source.length !== expectedLength) {
+    throw new RangeError(`source length must be ${expectedLength} after applying the edits.`);
+  }
+  if (editsPreserveLineBoundaries(data, sorted)) {
+    const lineDeltas = Array.from({ length: data.starts.length }, () => 0);
+    for (const edit of sorted) {
+      const line = lineForOffset(data.starts, edit.span.start);
+      lineDeltas[line] = (lineDeltas[line] ?? 0) + edit.text.length - (edit.span.end - edit.span.start);
+    }
+    let precedingDelta = 0;
+    const starts: number[] = [];
+    const contentEnds: number[] = [];
+    const endingEnds: number[] = [];
+    for (let line = 0; line < data.starts.length; line += 1) {
+      const lineDelta = lineDeltas[line] ?? 0;
+      starts.push((data.starts[line] ?? 0) + precedingDelta);
+      contentEnds.push((data.contentEnds[line] ?? source.length) + precedingDelta + lineDelta);
+      endingEnds.push((data.endingEnds[line] ?? source.length) + precedingDelta + lineDelta);
+      precedingDelta += lineDelta;
+    }
+    return sourceIndex(source, Object.freeze({
+      starts: Object.freeze(starts),
+      contentEnds: Object.freeze(contentEnds),
+      endingEnds: Object.freeze(endingEnds)
+    }), 0);
   }
   const first = sorted[0];
   const last = sorted.at(-1);
@@ -70,8 +116,8 @@ export function updateMarkdownSourceIndex(
   const regionEndLineExclusive = Math.min(data.starts.length, endLine + 2);
   const oldRegionStart = data.starts[regionStartLine] ?? 0;
   const oldRegionEnd = data.starts[regionEndLineExclusive] ?? previous.length;
-  const newRegionStart = mapOffset(oldRegionStart, sorted, 'backward');
-  const newRegionEnd = mapOffset(oldRegionEnd, sorted, 'forward');
+  const newRegionStart = mapOrderedSourceOffset(oldRegionStart, sorted, 'backward');
+  const newRegionEnd = mapOrderedSourceOffset(oldRegionEnd, sorted, 'forward');
   const local = scanLines(source.slice(newRegionStart, newRegionEnd));
   const localHasSuffixBoundary = newRegionEnd < source.length && local.starts.at(-1) === newRegionEnd - newRegionStart;
   const localLength = localHasSuffixBoundary ? local.starts.length - 1 : local.starts.length;
@@ -82,23 +128,39 @@ export function updateMarkdownSourceIndex(
   const starts = [
     ...data.starts.slice(0, regionStartLine),
     ...local.starts.slice(0, localLength).map((offset) => offset + newRegionStart),
-    ...data.starts.slice(suffixStartLine).map((offset) => mapOffset(offset, sorted, 'forward'))
+    ...data.starts.slice(suffixStartLine).map((offset) => mapOrderedSourceOffset(offset, sorted, 'forward'))
   ];
   const contentEnds = [
     ...data.contentEnds.slice(0, regionStartLine),
     ...local.contentEnds.slice(0, localLength).map((offset) => offset + newRegionStart),
-    ...data.contentEnds.slice(suffixStartLine).map((offset) => mapOffset(offset, sorted, 'forward'))
+    ...data.contentEnds.slice(suffixStartLine).map((offset) => mapOrderedSourceOffset(offset, sorted, 'forward'))
   ];
   const endingEnds = [
     ...data.endingEnds.slice(0, regionStartLine),
     ...local.endingEnds.slice(0, localLength).map((offset) => offset + newRegionStart),
-    ...data.endingEnds.slice(suffixStartLine).map((offset) => mapOffset(offset, sorted, 'forward'))
+    ...data.endingEnds.slice(suffixStartLine).map((offset) => mapOrderedSourceOffset(offset, sorted, 'forward'))
   ];
   return sourceIndex(source, Object.freeze({
     starts: Object.freeze(starts),
     contentEnds: Object.freeze(contentEnds),
     endingEnds: Object.freeze(endingEnds)
-  }));
+  }), newRegionEnd - newRegionStart);
+}
+
+function editsPreserveLineBoundaries(
+  data: SourceIndexData,
+  edits: readonly MarkdownSourceIndexEdit[]
+): boolean {
+  return edits.every((edit) => {
+    if (edit.text.includes('\n') || edit.text.includes('\r')) return false;
+    const startLine = lineForOffset(data.starts, edit.span.start);
+    const endLine = lineForOffset(data.starts, edit.span.end);
+    const contentEnd = data.contentEnds[startLine];
+    return startLine === endLine
+      && contentEnd !== undefined
+      && edit.span.start <= contentEnd
+      && edit.span.end <= contentEnd;
+  });
 }
 
 function scanLines(source: string): SourceIndexData {
@@ -143,7 +205,7 @@ function scanLines(source: string): SourceIndexData {
   });
 }
 
-function sourceIndex(source: string, data: SourceIndexData): MarkdownSourceIndex {
+function sourceIndex(source: string, data: SourceIndexData, scannedCodeUnits: number): MarkdownSourceIndex {
   const { starts, contentEnds, endingEnds } = data;
   const api: MarkdownSourceIndex = {
     length: source.length,
@@ -182,6 +244,7 @@ function sourceIndex(source: string, data: SourceIndexData): MarkdownSourceIndex
   };
   const frozen = Object.freeze(api);
   sourceIndexData.set(frozen, data);
+  recordMarkdownSourceIndexScanLength(frozen, scannedCodeUnits);
   return frozen;
 }
 
@@ -194,26 +257,6 @@ function lineForOffset(starts: readonly number[], offset: number): number {
     else high = middle;
   }
   return Math.max(0, low - 1);
-}
-
-function mapOffset(
-  offset: number,
-  edits: readonly MarkdownSourceIndexEdit[],
-  affinity: 'backward' | 'forward'
-): number {
-  let delta = 0;
-  for (const edit of edits) {
-    if (offset < edit.span.start) break;
-    if (offset > edit.span.end || (offset === edit.span.end && edit.span.start !== edit.span.end)) {
-      delta += edit.text.length - (edit.span.end - edit.span.start);
-      continue;
-    }
-    if (offset === edit.span.start && edit.span.start === edit.span.end) {
-      return edit.span.start + delta + (affinity === 'forward' ? edit.text.length : 0);
-    }
-    return edit.span.start + delta + (affinity === 'forward' ? edit.text.length : 0);
-  }
-  return offset + delta;
 }
 
 export function isSourceSpan(value: unknown): value is SourceSpan {

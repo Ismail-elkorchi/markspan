@@ -23,6 +23,9 @@ const activePackageManager = /^npm\/(\d+\.\d+\.\d+)/u.exec(process.env['npm_conf
 if (activePackageManager !== null) assert.equal(activePackageManager[1], packageManager[1]);
 assert.equal(pkg.sideEffects, false);
 assert.equal(pkg.publishConfig.provenance, true);
+if (process.env['GITHUB_REF_TYPE'] === 'tag') {
+  assert.equal(process.env['GITHUB_REF_NAME'], `v${pkg.version}`, 'release tag must match the package version');
+}
 assert.deepEqual(Object.keys(jsr.exports), Object.keys(pkg.exports));
 for (const path of Object.values(jsr.exports)) {
   assert.match(path, /^\.\/src\/[a-z-]+\.ts$/u);
@@ -41,6 +44,8 @@ for (const path of [
 ]) await access(new URL(`./${path}`, root));
 
 const api = await import(new URL('./dist/mod.js', root));
+const sourceApi = await import(new URL('./dist/source.js', root));
+assert.equal(sourceApi.markdownSourceIndexScanLength, undefined, 'source-index instrumentation must remain internal');
 for (const name of [
   'parseMarkdown',
   'walkMarkdown',

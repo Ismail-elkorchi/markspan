@@ -16,6 +16,35 @@ function assertTreeInvariants(parsed, source) {
     assert(node.span.end >= node.span.start);
     assert(node.span.end <= source.length);
     assert.equal(Object.isFrozen(node), true);
+    if (node.kind === 'codeBlock') {
+      assert.equal(Object.isFrozen(node.valueSourceMap), true);
+      assert.equal(Object.isFrozen(node.valueSourceMap.segments), true);
+      assert.equal(node.valueSourceMap.valueLength, node.value.length);
+      let valueOffset = 0;
+      let sourceOffset = 0;
+      for (const segment of node.valueSourceMap.segments) {
+        assert.equal(Object.isFrozen(segment), true);
+        assert.equal(segment.valueStart, valueOffset);
+        assert(segment.valueEnd >= segment.valueStart);
+        assert(segment.sourceSpan.start >= sourceOffset);
+        assert(segment.sourceSpan.end >= segment.sourceSpan.start);
+        assert(segment.sourceSpan.end <= source.length);
+        if (segment.kind === 'text') {
+          assert.equal(
+            node.value.slice(segment.valueStart, segment.valueEnd),
+            source.slice(segment.sourceSpan.start, segment.sourceSpan.end)
+          );
+        } else if (segment.kind === 'lineEnding') {
+          assert.equal(node.value.slice(segment.valueStart, segment.valueEnd), '\n');
+          assert.match(source.slice(segment.sourceSpan.start, segment.sourceSpan.end), /^(?:\r\n|\r|\n)$/u);
+        } else if (segment.kind === 'virtualSpaces') {
+          assert.match(node.value.slice(segment.valueStart, segment.valueEnd), /^ +$/u);
+        } else assert.equal(segment.valueStart, segment.valueEnd);
+        valueOffset = segment.valueEnd;
+        sourceOffset = segment.sourceSpan.end;
+      }
+      assert.equal(valueOffset, node.value.length);
+    }
     for (const child of markdownNodeChildren(node)) {
       assert(child.span.start >= node.span.start, `${child.kind} starts before ${node.kind}`);
       assert(child.span.end <= node.span.end, `${child.kind} ends after ${node.kind}`);

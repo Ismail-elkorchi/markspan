@@ -16,6 +16,7 @@ import { createMarkdownSourceIndex, type MarkdownSourceIndex } from './source.js
 import { BudgetController, resolveBudgets } from './internal/budget.js';
 import { convertMarkdown } from './internal/parser-engine.js';
 import type { BlockParseSeed } from './internal/block-parser.js';
+import { normalizeMarkdownIdentifier } from './internal/identifier.js';
 
 export interface MarkdownParseMetadata {
   readonly dialect: MarkdownDialect;
@@ -51,14 +52,6 @@ export function markdownLineCount(source: string): number {
     } else if (code === 0x0a) count += 1;
   }
   return count;
-}
-
-export function normalizeMarkdownIdentifier(value: string): string {
-  return value
-    .replace(/[\t\n\r ]+/gu, ' ')
-    .replace(/^ | $/gu, '')
-    .toLowerCase()
-    .toUpperCase();
 }
 
 function optionDialect(value: MarkdownDialect | undefined): MarkdownDialect {
@@ -147,11 +140,11 @@ export function parseMarkdownInternal(
     metadata,
     definitionFor(label: string): MarkdownReferenceDefinition | null {
       if (typeof label !== 'string') throw new TypeError('label must be a string.');
-      return definitionLookup.get(normalizeMarkdownIdentifier(label).toLowerCase()) ?? null;
+      return definitionLookup.get(normalizeMarkdownIdentifier(label)) ?? null;
     },
     footnoteFor(label: string): MarkdownFootnoteDefinition | null {
       if (typeof label !== 'string') throw new TypeError('label must be a string.');
-      return footnoteLookup.get(normalizeMarkdownIdentifier(label).toLowerCase()) ?? null;
+      return footnoteLookup.get(normalizeMarkdownIdentifier(label)) ?? null;
     }
   });
 }

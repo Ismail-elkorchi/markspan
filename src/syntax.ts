@@ -1,4 +1,4 @@
-import type { MarkdownNode, SourceSpan } from './model.js';
+import type { MarkdownFrontMatterValue, MarkdownNode, SourceSpan } from './model.js';
 import { walkMarkdown } from './analysis.js';
 
 export type MarkdownSyntaxTokenKind =
@@ -45,6 +45,23 @@ function token(kind: MarkdownSyntaxTokenKind, span: SourceSpan, nodeId: number):
   return Object.freeze({ kind, span, nodeId });
 }
 
+function frontMatterTokens(
+  value: MarkdownFrontMatterValue | null,
+  nodeId: number,
+  tokens: MarkdownSyntaxToken[]
+): void {
+  if (value === null || value.kind === 'scalar') return;
+  if (value.kind === 'sequence') {
+    for (const item of value.items) frontMatterTokens(item, nodeId, tokens);
+    return;
+  }
+  for (const entry of value.entries) {
+    tokens.push(token('frontMatterKey', entry.keySpan, nodeId));
+    tokens.push(token('frontMatterValue', entry.valueSpan, nodeId));
+    frontMatterTokens(entry.value, nodeId, tokens);
+  }
+}
+
 /**
  * Project source syntax ranges from the semantic tree. Tokens are intended for
  * editor styling and may overlap when one construct refers to another source
@@ -67,10 +84,7 @@ export function collectMarkdownSyntaxTokens(root: MarkdownNode): readonly Markdo
       case 'frontMatter':
         tokens.push(token('frontMatterMarker', node.openingMarkerSpan, node.id));
         if (node.closingMarkerSpan !== null) tokens.push(token('frontMatterMarker', node.closingMarkerSpan, node.id));
-        for (const entry of node.entries) {
-          tokens.push(token('frontMatterKey', entry.keySpan, node.id));
-          tokens.push(token('frontMatterValue', entry.valueSpan, node.id));
-        }
+        frontMatterTokens(node.value, node.id, tokens);
         break;
       case 'listItem':
         tokens.push(token('listMarker', node.markerSpan, node.id));
@@ -160,7 +174,7 @@ export function collectMarkdownSyntaxTokens(root: MarkdownNode): readonly Markdo
   tokens.sort((left, right) => (
     left.span.start - right.span.start
     || left.span.end - right.span.end
-    || left.kind.localeCompare(right.kind)
+    || (left.kind < right.kind ? -1 : left.kind > right.kind ? 1 : 0)
   ));
   return Object.freeze(tokens);
 }

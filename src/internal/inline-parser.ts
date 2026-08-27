@@ -5,6 +5,7 @@ import type {
 import type { MarkdownDialect, MarkdownSyntaxExtension } from '../options.js';
 import type { BudgetController } from './budget.js';
 import { decodeMarkdownString, isEscapable, parseCharacterReference } from './decode.js';
+import { normalizeMarkdownIdentifier } from './identifier.js';
 import type { InlineSource } from './source-reader.js';
 
 export interface InlineDefinitionTarget {
@@ -188,15 +189,6 @@ function delimiterCapabilities(value: string, start: number, end: number, marker
     };
   }
   return { canOpen: leftFlanking, canClose: rightFlanking };
-}
-
-function normalizeLabel(value: string): string {
-  return value
-    .replace(/[\t\n\r ]+/gu, ' ')
-    .replace(/^ | $/gu, '')
-    .toLowerCase()
-    .toUpperCase()
-    .toLowerCase();
 }
 
 function countRun(value: string, start: number, marker: string): number {
@@ -542,7 +534,7 @@ class InlineParser {
         if (closing !== undefined && closing - labelOpening <= 1_000) {
           if (this.options.dialect === 'gfm' && !image && this.value[labelOpening + 1] === '^') {
             const rawLabel = this.value.slice(labelOpening + 2, closing);
-            const normalized = normalizeLabel(rawLabel);
+            const normalized = normalizeMarkdownIdentifier(rawLabel);
             const target = this.options.footnotes.get(normalized);
             if (rawLabel.length > 0 && target !== undefined) {
               const tokenEnd = closing + 1;
@@ -827,7 +819,7 @@ class InlineParser {
         const rawReference = this.value.slice(closing + 2, referenceEnd);
         const collapsed = rawReference.length === 0;
         const lookup = collapsed ? labelText : rawReference;
-        const target = this.options.definitions.get(normalizeLabel(lookup));
+        const target = this.options.definitions.get(normalizeMarkdownIdentifier(lookup));
         if (target !== undefined) {
           return {
             end: referenceEnd + 1,
@@ -847,7 +839,7 @@ class InlineParser {
         if (!collapsed) return null;
       }
     }
-    const target = this.options.definitions.get(normalizeLabel(labelText));
+    const target = this.options.definitions.get(normalizeMarkdownIdentifier(labelText));
     if (target === undefined) return null;
     return {
       end: closing + 1,

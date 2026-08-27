@@ -169,7 +169,9 @@ export function renderBlocks(blocks, context = { dialect: 'commonmark', definiti
         const language = block.style === 'fenced' && block.language !== null
           ? ` class="language-${escapeAttribute(block.language)}"`
           : '';
-        const value = block.value.length === 0 ? '' : `${escapeText(block.value)}\n`;
+        const value = block.value.length === 0
+          ? ''
+          : escapeText(block.value.endsWith('\n') ? block.value : `${block.value}\n`);
         result += `<pre><code${language}>${value}</code></pre>\n`;
         break;
       }

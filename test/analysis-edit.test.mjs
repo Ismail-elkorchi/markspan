@@ -67,6 +67,29 @@ test('applies deterministic non-overlapping edits and maps offsets', () => {
   ]), /overlaps/u);
 });
 
+test('maps every insertion at one source boundary and removes semantic no-op edits', () => {
+  const edits = [
+    { span: { start: 1, end: 1 }, text: 'first' },
+    { span: { start: 1, end: 1 }, text: 'second' }
+  ];
+  const applied = applyMarkdownTextEdits('ab', edits);
+  assert.equal(applied.source, 'afirstsecondb');
+  assert.equal(mapMarkdownOffsetThroughEdits(2, 1, edits, 'backward'), 1);
+  assert.equal(mapMarkdownOffsetThroughEdits(2, 1, edits, 'forward'), 12);
+
+  const unchanged = applyMarkdownTextEdits('same', [
+    { span: { start: 0, end: 4 }, text: 'same' },
+    { span: { start: 4, end: 4 }, text: '' }
+  ]);
+  assert.deepEqual(unchanged.edits, []);
+  assert.equal(unchanged.source, 'same');
+  const session = createMarkdownDocumentSession('same');
+  const update = session.applyEdits([{ span: { start: 0, end: 4 }, text: 'same' }]);
+  assert.equal(update.instrumentation.parsedNodes, 0);
+  assert.equal(update.instrumentation.reconciledNodes, 0);
+  assert.equal(update.snapshot.source, 'same');
+});
+
 test('document session reparses a block suffix and preserves unaffected identities', () => {
   const source = '# One\n\nFirst block.\n\nSecond block.\n\nThird block.';
   const session = createMarkdownDocumentSession(source, { dialect: 'gfm' });
@@ -113,6 +136,37 @@ test('edits after definitions retain an incremental suffix and stable resolved l
   assert.equal(update.snapshot.document.tree.children[0], before.document.tree.children[0]);
   assert.equal(update.snapshot.document.tree.children[1], before.document.tree.children[1]);
   assert.equal(update.snapshot.document.definitionFor('guide')?.destination, '/one');
+});
+
+test('definition invalidation recognizes CR-only source lines', () => {
+  const source = '[guide]\r\rplaceholder';
+  const session = createMarkdownDocumentSession(source);
+  const start = source.indexOf('placeholder');
+  const update = session.applyEdits([{
+    span: { start, end: source.length },
+    text: '[guide]: /target'
+  }]);
+  assert.equal(update.instrumentation.fullParse, true);
+  assert.equal(update.snapshot.document.definitionFor('guide')?.destination, '/target');
+  assert.equal(collectMarkdownLinks(update.snapshot.document.tree).length, 1);
+  const fresh = parseMarkdown(update.snapshot.source);
+  const withoutIds = (value) => JSON.stringify(value, (key, entry) => key === 'id' ? 0 : entry);
+  assert.equal(withoutIds(update.snapshot.document.tree), withoutIds(fresh.tree));
+});
+
+test('point edits inside definitions invalidate earlier resolved references', () => {
+  const source = '[guide]\n\nBody\n\n[guide]: /target';
+  const session = createMarkdownDocumentSession(source);
+  const offset = source.indexOf('/target') + 3;
+  const update = session.applyEdits([{ span: { start: offset, end: offset }, text: '\n' }]);
+  assert.equal(update.instrumentation.fullParse, true);
+  const fresh = parseMarkdown(update.snapshot.source);
+  const withoutIds = (value) => JSON.stringify(value, (key, entry) => key === 'id' ? 0 : entry);
+  assert.equal(withoutIds(update.snapshot.document.tree), withoutIds(fresh.tree));
+  assert.deepEqual(
+    collectMarkdownLinks(update.snapshot.document.tree).map((link) => link.destination),
+    collectMarkdownLinks(fresh.tree).map((link) => link.destination)
+  );
 });
 
 test('projects source syntax tokens and builds a per-snapshot tree index', () => {

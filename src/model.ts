@@ -43,18 +43,42 @@ export interface MarkdownCalloutNode extends MarkdownNodeBase<'callout'> {
   readonly children: readonly MarkdownBlockNode[];
 }
 
-export interface MarkdownFrontMatterEntry {
+export interface MarkdownFrontMatterMappingEntry {
   readonly key: string;
-  readonly value: string;
   readonly keySpan: SourceSpan;
   readonly valueSpan: SourceSpan;
+  readonly value: MarkdownFrontMatterValue;
 }
+
+export interface MarkdownFrontMatterMapping {
+  readonly kind: 'mapping';
+  readonly span: SourceSpan;
+  readonly entries: readonly MarkdownFrontMatterMappingEntry[];
+}
+
+export interface MarkdownFrontMatterSequence {
+  readonly kind: 'sequence';
+  readonly span: SourceSpan;
+  readonly items: readonly MarkdownFrontMatterValue[];
+}
+
+export interface MarkdownFrontMatterScalar {
+  readonly kind: 'scalar';
+  readonly span: SourceSpan;
+  readonly style: 'plain' | 'singleQuoted' | 'doubleQuoted' | 'literal' | 'folded';
+  readonly value: string | number | boolean | null;
+}
+
+export type MarkdownFrontMatterValue =
+  | MarkdownFrontMatterMapping
+  | MarkdownFrontMatterSequence
+  | MarkdownFrontMatterScalar;
 
 export interface MarkdownFrontMatterNode extends MarkdownNodeBase<'frontMatter'> {
   readonly raw: string;
   readonly openingMarkerSpan: SourceSpan;
   readonly closingMarkerSpan: SourceSpan | null;
-  readonly entries: readonly MarkdownFrontMatterEntry[];
+  readonly value: MarkdownFrontMatterValue | null;
 }
 
 export type MarkdownListDelimiter = '.' | ')' | null;
@@ -92,10 +116,27 @@ export interface MarkdownFence {
   readonly closingSpan: SourceSpan | null;
 }
 
+export type MarkdownCodeValueSourceSegmentKind = 'text' | 'virtualSpaces' | 'lineEnding' | 'emptyLine';
+
+/** One monotonic piece of a normalized code value and its exact source origin. */
+export interface MarkdownCodeValueSourceSegment {
+  readonly kind: MarkdownCodeValueSourceSegmentKind;
+  readonly valueStart: number;
+  readonly valueEnd: number;
+  readonly sourceSpan: SourceSpan;
+}
+
+/** Immutable mapping from normalized code-value offsets to original source spans. */
+export interface MarkdownCodeValueSourceMap {
+  readonly valueLength: number;
+  readonly segments: readonly MarkdownCodeValueSourceSegment[];
+}
+
 export interface MarkdownCodeBlockNode extends MarkdownNodeBase<'codeBlock'> {
   readonly style: 'fenced' | 'indented';
   readonly value: string;
   readonly contentSpan: SourceSpan;
+  readonly valueSourceMap: MarkdownCodeValueSourceMap;
   readonly info: string | null;
   readonly infoSpan: SourceSpan | null;
   readonly language: string | null;

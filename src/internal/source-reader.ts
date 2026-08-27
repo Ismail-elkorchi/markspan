@@ -14,6 +14,8 @@ export interface LineView {
   readonly virtualColumn: number;
   /** Expanded indentation cells that remain before `contentStart`. */
   readonly virtualSpaces?: number;
+  /** Source tab responsible for `virtualSpaces`, when those cells are virtual. */
+  readonly virtualSourceSpan?: SourceSpan;
   /** A container-less continuation that may extend a paragraph but cannot open blocks. */
   readonly lazy?: boolean;
 }

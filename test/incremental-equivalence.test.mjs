@@ -39,6 +39,7 @@ function canonical(snapshot) {
     definitions: withoutSessionIds(document.definitions),
     footnotes: withoutSessionIds(document.footnotes),
     diagnostics: document.diagnostics,
+    metadata: document.metadata,
     plainText: extractMarkdownText(document.tree),
     outline: withoutSessionIds(extractMarkdownOutline(document.tree)),
     links: withoutSessionIds(collectMarkdownLinks(document.tree)),
@@ -168,6 +169,75 @@ test('unchanged nodes retain session identifiers across insertions and replaceme
   assert.equal(update.instrumentation.fullParse, false);
 });
 
+test('syntax-neutral edits reuse parser units inside giant block containers', () => {
+  const fixtures = [
+    Array.from({ length: 2_000 }, (_, index) => `- list item ${String(index)}`).join('\n'),
+    ['| key | value |', '| --- | --- |', ...Array.from({ length: 2_000 }, (_, index) => `| row ${String(index)} | table value ${String(index)} |`)].join('\n'),
+    Array.from({ length: 2_000 }, (_, index) => `> quoted value ${String(index)}`).join('\n'),
+    `\`\`\`ts\n${Array.from({ length: 2_000 }, (_, index) => `const value${String(index)} = ${String(index)};`).join('\n')}\n\`\`\``,
+    `paragraph ${'word '.repeat(50_000)}tail`
+  ];
+  for (const initial of fixtures) {
+    const needle = initial.includes('table value') ? 'table value'
+      : initial.includes('quoted value') ? 'quoted value'
+        : initial.includes('const value') ? 'const value'
+          : initial.includes('list item') ? 'list item'
+            : 'word word';
+    const occurrence = initial.indexOf(needle, Math.floor(initial.length / 3));
+    assert(occurrence >= 0);
+    const offset = occurrence + 2;
+    for (const edit of [
+      { span: { start: offset, end: offset }, text: 'Z' },
+      { span: { start: offset, end: offset + 1 }, text: '' },
+      { span: { start: offset, end: offset + 1 }, text: 'Z' }
+    ]) {
+      const session = createMarkdownDocumentSession(initial, options);
+      const beforeNodes = [...walkMarkdown(session.snapshot().document.tree)].map(({ node }) => node);
+      const beforeContainerId = session.snapshot().document.tree.children[0]?.id;
+      const stableLeaf = beforeNodes.find((node) => node.kind === 'text' && node.span.end < offset);
+      const update = session.applyEdits([edit]);
+      assert.equal(update.instrumentation.fullParse, false);
+      assert.equal(update.instrumentation.parsedCodeUnits, 0);
+      assert.equal(update.instrumentation.parsedNodes, 0);
+      assert(update.instrumentation.sourceTraversalCodeUnits >= update.snapshot.source.length);
+      assert(update.instrumentation.sourceIndexCodeUnits <= initial.length);
+      if (initial.includes('\n')) assert(update.instrumentation.sourceIndexCodeUnits < initial.length / 10);
+      assert(update.instrumentation.reconciledNodes > 0);
+      assert.notEqual(update.snapshot.document.tree.children[0]?.id, beforeContainerId);
+      assert(update.instrumentation.reusedNodes >= beforeNodes.length - 12);
+      assert(update.instrumentation.reusedNodes <= update.snapshot.document.metadata.nodeCount);
+      if (stableLeaf !== undefined) {
+        assert([...walkMarkdown(update.snapshot.document.tree)].some(({ node }) => node.id === stableLeaf.id));
+      }
+      assertFreshEquivalent(session);
+    }
+  }
+});
+
+test('malformed YAML front matter reports stable source-exact diagnostics', () => {
+  const source = [
+    '---',
+    'root:',
+    '    valid: true',
+    '  invalid: indentation',
+    'quoted: "unterminated',
+    'block: |invalid',
+    '---'
+  ].join('\n');
+  const session = createMarkdownDocumentSession(source, options);
+  const diagnostics = session.snapshot().document.diagnostics;
+  assert.deepEqual(diagnostics.map((diagnostic) => diagnostic.message), [
+    'Unexpected YAML indentation.',
+    'A double-quoted YAML scalar is not closed.',
+    'A YAML block scalar header is malformed.'
+  ]);
+  for (const diagnostic of diagnostics) {
+    assert(diagnostic.span.start >= 0);
+    assert(diagnostic.span.end <= source.length);
+    assert(diagnostic.span.end >= diagnostic.span.start);
+  }
+});
+
 test('shifted definition spans update on stable prefix references', () => {
   const source = '# Top\n\n[guide]\n\nFirst.\n\nMiddle.\n\n[guide]: /target';
   const session = createMarkdownDocumentSession(source, options);
@@ -177,12 +247,24 @@ test('shifted definition spans update on stable prefix references', () => {
   const afterLink = collectMarkdownNodes(update.snapshot.document.tree, 'link')[0];
 
   assert.equal(update.instrumentation.fullParse, false);
+  assert(update.instrumentation.comparedCodeUnits > 0);
+  assert(update.instrumentation.reconciledNodes > 0);
+  assert(update.instrumentation.sourceTraversalCodeUnits >= update.instrumentation.parsedCodeUnits);
   assert.equal(afterLink?.nodeId, beforeLink?.nodeId);
   assert.equal(
     afterLink?.definitionSpan?.start,
     (beforeLink?.definitionSpan?.start ?? 0) + 'Longer '.length
   );
   assertFreshEquivalent(session);
+});
+
+test('edits to shortcut reference text reparse definition-sensitive syntax', () => {
+  const source = '[alpha]\n\n[alpha]: /destination';
+  const session = createMarkdownDocumentSession(source, options);
+  const update = session.applyEdits([{ span: { start: 3, end: 4 }, text: 'z' }]);
+  assert(update.instrumentation.parsedCodeUnits > 0);
+  assertFreshEquivalent(session);
+  assert.equal(collectMarkdownLinks(update.snapshot.document.tree).length, 0);
 });
 
 test('incremental source indexes are identical to indexes created from the resulting source', () => {
@@ -210,4 +292,32 @@ test('incremental source indexes are identical to indexes created from the resul
       assert.deepEqual(index.positionAt(offset), fresh.positionAt(offset));
     }
   }
+});
+
+test('source index updates map ordered line-ending insertions at one boundary', () => {
+  const previousSource = 'alpha\nomega';
+  const edits = [
+    { span: { start: 6, end: 6 }, text: 'first\r\n' },
+    { span: { start: 6, end: 6 }, text: 'second\r' }
+  ];
+  const source = 'alpha\nfirst\r\nsecond\romega';
+  const updated = updateMarkdownSourceIndex(createMarkdownSourceIndex(previousSource), source, edits);
+  const fresh = createMarkdownSourceIndex(source);
+  assert.equal(updated.lineCount, fresh.lineCount);
+  for (let line = 0; line < fresh.lineCount; line += 1) {
+    assert.deepEqual(updated.lineSpan(line, true), fresh.lineSpan(line, true));
+  }
+  assert.throws(
+    () => updateMarkdownSourceIndex(createMarkdownSourceIndex('abc'), 'wrong', [
+      { span: { start: 1, end: 1 }, text: 'x' }
+    ]),
+    /source length must be 4/u
+  );
+  assert.throws(
+    () => updateMarkdownSourceIndex(createMarkdownSourceIndex('abc'), 'xbc', [
+      { span: { start: 0, end: 0 }, text: 'x' },
+      { span: { start: 0, end: 1 }, text: '' }
+    ]),
+    /source index edits overlap/u
+  );
 });

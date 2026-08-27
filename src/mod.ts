@@ -25,6 +25,8 @@ export {
 
 export * from './model.js';
 
+export { markdownCodeValueSourceSpan } from './code-value-source-map.js';
+
 export {
   assertSourceSpan,
   createMarkdownSourceIndex,

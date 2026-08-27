@@ -44,7 +44,10 @@ results.push({
   milliseconds: performance.now() - editAt,
   nodes: update.snapshot.document.metadata.nodeCount,
   outcome: update.instrumentation.fullParse ? 'full' : 'incremental',
-  parsedCodeUnits: update.parsedSpan.end - update.parsedSpan.start,
+  parsedCodeUnits: update.instrumentation.parsedCodeUnits,
+  sourceIndexCodeUnits: update.instrumentation.sourceIndexCodeUnits,
+  reconciledNodes: update.instrumentation.reconciledNodes,
+  sourceTraversalCodeUnits: update.instrumentation.sourceTraversalCodeUnits,
   reusedNodes: update.instrumentation.reusedNodes
 });
 
