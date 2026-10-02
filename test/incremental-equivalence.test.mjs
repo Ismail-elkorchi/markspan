@@ -30,6 +30,10 @@ function canonical(snapshot) {
   const { document, source } = snapshot;
   return {
     source,
+    sourceLines: Array.from({ length: document.sourceIndex.lineCount }, (_, line) => ({
+      content: document.sourceIndex.lineSpan(line),
+      ending: document.sourceIndex.lineSpan(line, true)
+    })),
     tree: withoutSessionIds(document.tree),
     slices: [...walkMarkdown(document.tree)].map(({ node }) => ({
       kind: node.kind,
@@ -52,10 +56,17 @@ function canonical(snapshot) {
   };
 }
 
-function assertFreshEquivalent(session) {
+function assertFreshEquivalent(session, parseOptions = options) {
   const incremental = session.snapshot();
-  const fresh = createMarkdownDocumentSession(incremental.source, options).snapshot();
+  const fresh = createMarkdownDocumentSession(incremental.source, parseOptions).snapshot();
   assert.deepEqual(canonical(incremental), canonical(fresh));
+  assert.equal(incremental.document.sourceText, incremental.source);
+  const nodes = [...walkMarkdown(incremental.document.tree)].map(({ node }) => node);
+  assert.equal(new Set(nodes.map((node) => node.id)).size, nodes.length);
+  for (const definition of [...incremental.document.definitions, ...incremental.document.footnotes]) {
+    assert(nodes.some((node) => node.id === definition.nodeId));
+  }
+  assert.equal(nodes.length, incremental.document.metadata.nodeCount);
 }
 
 function safeOffset(source, value) {
@@ -74,6 +85,137 @@ function generator(seed) {
     return state;
   };
 }
+
+for (const dialect of ['commonmark', 'gfm']) {
+  test(`incremental source regions own whitespace and block boundaries (${dialect})`, () => {
+    const parseOptions = { ...options, dialect };
+    for (const ending of ['\n', '\r\n', '\r']) {
+      const fixtures = [
+        '', ' ', '\t', ending, `${ending}text`, ` ${ending}# Heading`,
+        `  text${ending}${ending}  tail  `,
+        `first${ending}${ending}last${ending}${ending}`,
+        `first${ending}# Heading${ending}${ending}tail`,
+        `first${ending}${ending}---${ending}${ending}tail`,
+        `---${ending}title: Test${ending}---${ending}${ending}tail`,
+        `prefix${ending}${ending}  - item${ending}${ending}tail`,
+        `- first${ending}${ending}+ second${ending}${ending}tail`,
+        `    code${ending}${ending}paragraph${ending}${ending}tail`,
+        `> quote${ending}${ending}> second${ending}${ending}tail`,
+        `first${ending}${ending}\`\`\`js${ending}value${ending}\`\`\`${ending}${ending}tail`,
+        `[label]${ending}${ending}[label]: /target${ending}${ending}tail`
+      ];
+      for (const source of fixtures) {
+        for (let start = 0; start <= source.length; start += 1) {
+          for (const text of ['x', '', ending, '    ', '- ']) {
+            const end = Math.min(source.length, start + (text === '' ? 1 : 0));
+            const session = createMarkdownDocumentSession(source, parseOptions);
+            const edit = { span: { start, end }, text };
+            const deleted = source.slice(start, end);
+            const context = JSON.stringify({ source, edit });
+            session.applyEdits([edit]);
+            assert.equal(session.snapshot().source, source.slice(0, start) + text + source.slice(end), context);
+            try {
+              assertFreshEquivalent(session, parseOptions);
+              session.applyEdits([{ span: { start, end: start + text.length }, text: deleted }]);
+              assertFreshEquivalent(session, parseOptions);
+              assert.equal(session.snapshot().source, source, context);
+              session.applyEdits([edit]);
+              assertFreshEquivalent(session, parseOptions);
+            } catch (error) {
+              throw new Error(context, { cause: error });
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+test('definition dependencies and inactive syntax are invalidated at their source region', () => {
+  const cases = [
+    { source: '[a]\n\ntb]\n\n[a]:t', start: 6, end: 10, text: '' },
+    { source: '**', start: 1, end: 1, text: '\u0301' },
+    { source: 'a\n```', start: 2, end: 4, text: '' },
+    { source: '[guide]\n\n.\n\n[guide]:.', start: 11, end: 11, text: '|' },
+    { source: 'a\n```', start: 2, end: 2, text: ']' },
+    { source: '[^two]\n\nm\n[^two]:', start: 9, end: 10, text: '' },
+    { source: '[^one]\n[^one]:\n    \n', start: 19, end: 20, text: ']' },
+    { source: '[^a]: [b]\n\n[^a]\n\ntext\n\n[b]: /target', start: 23, end: 23, text: 'x' },
+    { source: 'htxtp://example.com', start: 2, end: 3, text: '' },
+    { source: 'wwxw.example.com', start: 2, end: 3, text: '' },
+    { source: '[a]\n\n```\ncode\n```\n\n[a]: /target', start: 15, end: 16, text: 'x' }
+  ];
+  for (const { source, start, end, text } of cases) {
+    const session = createMarkdownDocumentSession(source, options);
+    session.applyEdits([{ span: { start, end }, text }]);
+    assertFreshEquivalent(session);
+    session.applyEdits([{ span: { start, end: start + text.length }, text: source.slice(start, end) }]);
+    assertFreshEquivalent(session);
+    assert.equal(session.snapshot().source, source);
+  }
+});
+
+test('deleting indented-code line content invalidates blank block boundaries', () => {
+  for (const ending of ['\n', '\r\n', '\r']) {
+    for (const body of [
+      '     word ',
+      `     word ${ending}    next`,
+      `    first${ending}     word `,
+      `    first${ending}     word ${ending}    last`,
+      `    first${ending}    ${ending}     word ${ending}    `,
+      `\t word\t${ending}    next`
+    ]) {
+      for (const source of [body, `# Prefix${ending}${ending}${body}${ending}${ending}Tail`]) {
+        const session = createMarkdownDocumentSession(source, options);
+        const start = source.indexOf('word');
+        const edit = { span: { start, end: start + 4 }, text: '' };
+        const update = session.applyEdits([edit]);
+        assertFreshEquivalent(session);
+        assert(update.instrumentation.parsedCodeUnits > 0);
+        session.applyEdits([{ span: { start, end: start }, text: 'word' }]);
+        assertFreshEquivalent(session);
+        assert.equal(session.snapshot().source, source);
+        session.applyEdits([edit]);
+        assertFreshEquivalent(session);
+      }
+    }
+  }
+});
+
+test('footnote edits derive ordered definition identities from the rebuilt tree', () => {
+  for (const source of ['[^a]: word\n\n[^a]', '[^a]: [^b]: word', '# Title\n\n[^a]: [^b]: word\n\nTail']) {
+    for (const text of ['Z', 'ZZ', '', '**Z**']) {
+      const session = createMarkdownDocumentSession(source, options);
+      const oldDefinitionId = session.snapshot().document.footnotes[0].nodeId;
+      const start = source.indexOf('word') + 1;
+      const edit = { span: { start, end: start + 1 }, text };
+      const update = session.applyEdits([edit]);
+      if (text === '**Z**') assert(update.instrumentation.parsedCodeUnits > 0);
+      else assert.equal(update.instrumentation.parsedCodeUnits, 0);
+      assert.notEqual(update.snapshot.document.footnotes[0].nodeId, oldDefinitionId);
+      assertFreshEquivalent(session);
+      session.applyEdits([{ span: { start, end: start + text.length }, text: source.slice(start, start + 1) }]);
+      assertFreshEquivalent(session);
+      assert.equal(session.snapshot().source, source);
+    }
+  }
+});
+
+test('blank-gap edits preserve a bounded suffix and stable prefix identities', () => {
+  const source = Array.from({ length: 1_000 }, (_, index) => `paragraph ${index}`).join('\n\n');
+  const session = createMarkdownDocumentSession(source, options);
+  const before = session.snapshot().document.tree.children;
+  const start = source.lastIndexOf('\n\n') + 1;
+  const update = session.applyEdits([{ span: { start, end: start }, text: '- item' }]);
+  assert.equal(update.instrumentation.fullParse, false);
+  assert(update.instrumentation.parsedCodeUnits < source.length / 100);
+  assert(update.parsedSpan.start <= start);
+  assert(update.instrumentation.reusedNodes >= 1_990);
+  for (let index = 0; index < 998; index += 1) {
+    assert.equal(update.snapshot.document.tree.children[index], before[index]);
+  }
+  assertFreshEquivalent(session);
+});
 
 test('seeded incremental edit streams are canonically equivalent to fresh sessions', () => {
   const initial = [
@@ -175,7 +317,7 @@ test('syntax-neutral edits reuse parser units inside giant block containers', ()
     ['| key | value |', '| --- | --- |', ...Array.from({ length: 2_000 }, (_, index) => `| row ${String(index)} | table value ${String(index)} |`)].join('\n'),
     Array.from({ length: 2_000 }, (_, index) => `> quoted value ${String(index)}`).join('\n'),
     `\`\`\`ts\n${Array.from({ length: 2_000 }, (_, index) => `const value${String(index)} = ${String(index)};`).join('\n')}\n\`\`\``,
-    `paragraph ${'word '.repeat(50_000)}tail`
+    `paragraph ${'word '.repeat(50_000)}tail.`
   ];
   for (const initial of fixtures) {
     const needle = initial.includes('table value') ? 'table value'
@@ -320,4 +462,22 @@ test('source index updates map ordered line-ending insertions at one boundary', 
     ]),
     /source index edits overlap/u
   );
+});
+
+test('source-index updates rescan deleted content that joins CR and LF endings', () => {
+  for (const edits of [
+    [{ span: { start: 2, end: 4 }, text: '' }],
+    [{ span: { start: 2, end: 3 }, text: '' }, { span: { start: 3, end: 4 }, text: '' }]
+  ]) {
+    const source = 'a\rxy\nb';
+    const updated = updateMarkdownSourceIndex(createMarkdownSourceIndex(source), 'a\r\nb', edits);
+    const fresh = createMarkdownSourceIndex('a\r\nb');
+    assert.equal(updated.lineCount, fresh.lineCount);
+    for (let line = 0; line < fresh.lineCount; line += 1) {
+      assert.deepEqual(updated.lineSpan(line, true), fresh.lineSpan(line, true));
+    }
+    for (let offset = 0; offset <= fresh.length; offset += 1) {
+      assert.deepEqual(updated.positionAt(offset), fresh.positionAt(offset));
+    }
+  }
 });

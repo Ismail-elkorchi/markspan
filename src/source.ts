@@ -151,16 +151,23 @@ function editsPreserveLineBoundaries(
   data: SourceIndexData,
   edits: readonly MarkdownSourceIndexEdit[]
 ): boolean {
-  return edits.every((edit) => {
+  const lineDeltas = new Map<number, number>();
+  const preserves = edits.every((edit) => {
     if (edit.text.includes('\n') || edit.text.includes('\r')) return false;
     const startLine = lineForOffset(data.starts, edit.span.start);
     const endLine = lineForOffset(data.starts, edit.span.end);
     const contentEnd = data.contentEnds[startLine];
+    lineDeltas.set(startLine, (lineDeltas.get(startLine) ?? 0) + edit.text.length - (edit.span.end - edit.span.start));
     return startLine === endLine
       && contentEnd !== undefined
       && edit.span.start <= contentEnd
       && edit.span.end <= contentEnd;
   });
+  // Removing all content between a CR and LF joins two line endings into one.
+  // Include adjacent lines in the rescan whenever an edited line becomes empty.
+  return preserves && [...lineDeltas].every(([line, delta]) => (
+    (data.contentEnds[line] ?? 0) - (data.starts[line] ?? 0) + delta > 0
+  ));
 }
 
 function scanLines(source: string): SourceIndexData {

@@ -196,8 +196,23 @@ function incrementalBlockBoundary(document: ParsedMarkdownDocument, offset: numb
     else upper = middle;
   }
   const candidate = blocks[lower];
-  if (candidate !== undefined && candidate.span.start <= offset) return candidate.span.start;
-  return blocks[Math.max(0, lower - 1)]?.span.start ?? 0;
+  let index = candidate !== undefined && candidate.span.start <= offset ? lower : lower - 1;
+  if (index <= 0) return 0;
+  const block = blocks[index];
+  const previous = blocks[index - 1];
+  if (block === undefined || previous === undefined) return 0;
+
+  // Node spans omit indentation and inter-block whitespace. Those source regions
+  // still participate in parsing, and a changed block can continue its predecessor.
+  const gap = document.sourceText?.slice(previous.span.end, block.span.start) ?? '';
+  const hasBlankLine = /(?:\n|\r(?!\n))[ \t]*(?:\r|\n)/u.test(gap);
+  if (!hasBlankLine
+    || previous.kind === 'list'
+    || previous.kind === 'footnoteDefinition'
+    || (previous.kind === 'codeBlock' && previous.style === 'indented')) index -= 1;
+  if (index === 0) return 0;
+  const start = blocks[index]?.span.start ?? 0;
+  return document.sourceIndex.lineSpan(document.sourceIndex.positionAt(start).line).start;
 }
 
 function blockPrefixLength(document: ParsedMarkdownDocument, offset: number): number {
@@ -210,10 +225,6 @@ function blockPrefixLength(document: ParsedMarkdownDocument, offset: number): nu
     else upper = middle;
   }
   return lower;
-}
-
-function mayContainDefinition(value: string): boolean {
-  return /(?:^|[\r\n])[ \t]{0,3}\[(?:\^)?[^\]\r\n]+\]:/u.test(value);
 }
 
 function isSpan(value: unknown): value is SourceSpan {
@@ -295,7 +306,15 @@ function reusableLeafEdit(
       && edit.span.start > node.span.start
       && edit.span.end < node.span.end) {
       work.comparedCodeUnits += (node.span.end - node.span.start) * 2;
-      if (source.slice(node.span.start, node.span.end) !== node.value) return null;
+      // An edit must remain inside a plain word. A text node can also contain
+      // inactive syntax such as '#x' or 'htxtp://host', which edits can activate.
+      let wordStart = edit.span.start;
+      let wordEnd = edit.span.end;
+      while (wordStart > node.span.start && !/[ \t]/u.test(source[wordStart - 1] ?? '')) wordStart -= 1;
+      while (wordEnd < node.span.end && !/[ \t]/u.test(source[wordEnd] ?? '')) wordEnd += 1;
+      if (edit.span.start <= wordStart || edit.span.end >= wordEnd
+        || !syntaxNeutralText(source.slice(wordStart, wordEnd))
+        || source.slice(node.span.start, node.span.end) !== node.value) return null;
       return {
         kind: 'text',
         nodeId: node.id,
@@ -312,6 +331,16 @@ function reusableLeafEdit(
         && edit.span.end < candidate.sourceSpan.end
       ));
       if (segment === undefined) return null;
+      if (edit.text.length === 0) {
+        const remaining = source.slice(segment.sourceSpan.start, edit.span.start)
+          + source.slice(edit.span.end, segment.sourceSpan.end);
+        // Blank lines delimit indented code; fence-only lines delimit fenced code.
+        // Deleting letters can expose either boundary without editing a newline.
+        if (node.style === 'indented' && /^[ \t]*$/u.test(remaining)) return null;
+        const line = remaining.trim();
+        if (node.fence !== null && line.length >= node.fence.length && line[0] === node.fence.character
+          && line === node.fence.character.repeat(line.length)) return null;
+      }
       return {
         kind: 'codeBlock',
         nodeId: node.id,
@@ -354,8 +383,7 @@ function replaceReusableLeaf(
   insertedText: string,
   nextId: () => number,
   pathNodeIds: ReadonlySet<number>,
-  work: ReconciliationWork,
-  summaryCache: WeakMap<object, MarkdownTreeSummary>
+  work: ReconciliationWork
 ): MarkdownNode {
   work.visitedNodes += 1;
   if (node.id === target.nodeId) {
@@ -365,7 +393,6 @@ function replaceReusableLeaf(
         id: nextId(),
         value: node.value.slice(0, target.valueStart) + insertedText + node.value.slice(target.valueEnd)
       });
-      preserveTreeSummary(node, replacement, summaryCache);
       return replacement;
     }
     if (target.kind === 'codeBlock' && node.kind === 'codeBlock') {
@@ -389,30 +416,18 @@ function replaceReusableLeaf(
           }))
         })
       });
-      preserveTreeSummary(node, replacement, summaryCache);
       return replacement;
     }
   }
   const rebuilt = rebuildWithChildren(node, (child) => pathNodeIds.has(child.id)
-    ? replaceReusableLeaf(child, target, insertedText, nextId, pathNodeIds, work, summaryCache)
+    ? replaceReusableLeaf(child, target, insertedText, nextId, pathNodeIds, work)
     : child);
   if (rebuilt === node) return rebuilt;
   if (rebuilt.kind === 'document') {
-    preserveTreeSummary(node, rebuilt, summaryCache);
     return rebuilt;
   }
   const replacement = Object.freeze({ ...rebuilt, id: nextId() }) as MarkdownNode;
-  preserveTreeSummary(node, replacement, summaryCache);
   return replacement;
-}
-
-function preserveTreeSummary(
-  previous: MarkdownNode,
-  next: MarkdownNode,
-  summaryCache: WeakMap<object, MarkdownTreeSummary>
-): void {
-  const summary = summaryCache.get(previous);
-  if (summary !== undefined) summaryCache.set(next, summary);
 }
 
 function mappedDiagnostics(
@@ -426,7 +441,7 @@ function mappedDiagnostics(
 }
 
 function equivalentSyntax(left: unknown, right: unknown, key = ''): boolean {
-  if (key === 'id') return true;
+  if (key === 'id' || key === 'nodeId') return true;
   if (left === right) return true;
   if (typeof left !== typeof right || left === null || right === null) return false;
   if (Array.isArray(left) || Array.isArray(right)) {
@@ -564,6 +579,15 @@ function summarizeMarkdownTree(
   const childSummaries = children.map((child) => summarizeMarkdownTree(child, cache, work));
   const definitions: MarkdownReferenceDefinition[] = [];
   const footnotes: MarkdownFootnoteDefinition[] = [];
+  let nodeCount = 1;
+  let height = 1;
+  for (const summary of childSummaries) {
+    nodeCount += summary.nodeCount;
+    height = Math.max(height, summary.height + 1);
+    definitions.push(...summary.definitions);
+    footnotes.push(...summary.footnotes);
+  }
+  // Match emission order: nested definitions are recorded before their container.
   if (node.kind === 'linkDefinition' && node.active) {
     definitions.push(Object.freeze({
       label: node.label,
@@ -580,14 +604,6 @@ function summarizeMarkdownTree(
       span: node.span,
       nodeId: node.id
     }));
-  }
-  let nodeCount = 1;
-  let height = 1;
-  for (const summary of childSummaries) {
-    nodeCount += summary.nodeCount;
-    height = Math.max(height, summary.height + 1);
-    definitions.push(...summary.definitions);
-    footnotes.push(...summary.footnotes);
   }
   if (node.kind === 'paragraph'
     || node.kind === 'heading'
@@ -703,53 +719,29 @@ function assembleSessionDocument(
   });
 }
 
-function spansIntersectChange(span: SourceSpan, change: SourceSpan): boolean {
-  if (change.start === change.end) return span.start <= change.start && change.start <= span.end;
-  return span.start < change.end && change.start < span.end;
-}
-
-function changedLineWindow(source: string, changed: SourceSpan): string {
-  let start = Math.max(0, changed.start);
-  while (start > 0 && source[start - 1] !== '\n' && source[start - 1] !== '\r') start -= 1;
-  let end = Math.min(source.length, changed.end);
-  while (end < source.length && source[end] !== '\n' && source[end] !== '\r') end += 1;
-  return source.slice(start, end);
-}
-
-function definitionEditRequiresFullParse(
-  document: ParsedMarkdownDocument,
-  applied: AppliedMarkdownEdits
-): boolean {
-  if (document.definitions.some((definition) => spansIntersectChange(definition.span, applied.changedOldSpan))) return true;
-  if (document.footnotes.some((footnote) => spansIntersectChange(footnote.span, applied.changedOldSpan))) return true;
-  return mayContainDefinition(changedLineWindow(applied.source, applied.changedNewSpan));
-}
-
-function fragmentSeed(
-  document: ParsedMarkdownDocument,
-  oldStart: number,
-  newStart: number
+function definitionSeed(
+  referenceDefinitions: readonly MarkdownReferenceDefinition[],
+  footnoteDefinitions: readonly MarkdownFootnoteDefinition[],
+  sourceOffset: number
 ): import('./internal/block-parser.js').BlockParseSeed {
-  const definitions = new Map(document.definitions
-    .filter((definition) => definition.span.end <= oldStart)
+  const definitions = new Map(referenceDefinitions
     .map((definition) => [definition.normalizedLabel, {
       label: definition.label,
       normalizedLabel: definition.normalizedLabel,
       destination: definition.destination,
       title: definition.title,
-      span: freezeSpan(definition.span.start - newStart, definition.span.end - newStart)
+      span: freezeSpan(definition.span.start - sourceOffset, definition.span.end - sourceOffset)
     }]));
-  const footnotes = new Map(document.footnotes
-    .filter((footnote) => footnote.span.end <= oldStart)
+  const footnotes = new Map(footnoteDefinitions
     .map((footnote) => [footnote.normalizedLabel, {
       label: footnote.label,
       normalizedLabel: footnote.normalizedLabel,
-      span: freezeSpan(footnote.span.start - newStart, footnote.span.end - newStart)
+      span: freezeSpan(footnote.span.start - sourceOffset, footnote.span.end - sourceOffset)
     }]));
   return Object.freeze({ definitions, footnotes });
 }
 
-/** Create a stateful document that reparses only the block suffix after a safe blank-line boundary. */
+/** Create a stateful document that reparses affected block regions and their reference dependents. */
 export function createMarkdownDocumentSession(
   source: string,
   options: MarkdownParseOptions = {}
@@ -816,8 +808,7 @@ export function createMarkdownDocumentSession(
           applied.edits[0]?.text ?? '',
           () => nextNodeId++,
           pathNodeIds,
-          reconciliationWork,
-          summaryCache
+          reconciliationWork
         ) as MarkdownDocumentNode;
         const sourceIndex = updateMarkdownSourceIndex(oldDocument.sourceIndex, applied.source, applied.edits);
         reconciliationWork.reusedNodes = Math.max(
@@ -859,8 +850,7 @@ export function createMarkdownDocumentSession(
         });
       }
       const limits = resolveBudgets(options.budgets);
-      const fullParse = definitionEditRequiresFullParse(oldDocument, applied);
-      const oldStart = fullParse ? 0 : incrementalBlockBoundary(oldDocument, applied.changedOldSpan.start);
+      const oldStart = incrementalBlockBoundary(oldDocument, applied.changedOldSpan.start);
       const newStart = mapOrderedSourceOffset(oldStart, applied.edits, 'backward');
       const sourceIndex = newStart === 0
         ? undefined
@@ -872,7 +862,7 @@ export function createMarkdownDocumentSession(
         oldDocument.definitions.some((definition) => definition.span.start >= oldStart)
         || oldDocument.footnotes.some((footnote) => footnote.span.start >= oldStart)
       );
-      const prefix = laterDefinitionShifted
+      let prefix: MarkdownDocumentNode['children'] = laterDefinitionShifted
         ? oldPrefix.map((block) => mapOldValue(
             block,
             (offset, affinity) => mapOrderedSourceOffset(offset, applied.edits, affinity),
@@ -885,10 +875,46 @@ export function createMarkdownDocumentSession(
         {
           sourceOffset: newStart,
           documentLength: applied.source.length,
-          seed: fragmentSeed(oldDocument, oldStart, newStart),
+          seed: definitionSeed(
+            oldDocument.definitions.filter((definition) => definition.span.end <= oldStart),
+            oldDocument.footnotes.filter((footnote) => footnote.span.end <= oldStart),
+            newStart
+          ),
           nextId: () => nextNodeId++
         }
       );
+      // Block changes can consume or reveal definitions far beyond the edit.
+      // Resolve the affected suffix first, then invalidate its earlier reference
+      // dependents only when the definition environment actually changed.
+      const definitionsChanged = !equivalentSyntax(
+        mapOldValue({
+          definitions: oldDocument.definitions.filter((definition) => definition.span.end > oldStart),
+          footnotes: oldDocument.footnotes.filter((footnote) => footnote.span.end > oldStart)
+        }, (offset, affinity) => mapOrderedSourceOffset(offset, applied.edits, affinity)),
+        { definitions: fragment.definitions, footnotes: fragment.footnotes }
+      );
+      const prefixFragment = newStart > 0 && definitionsChanged
+        ? parseMarkdownInternal(
+            applied.source.slice(0, newStart),
+            { ...options, sourceRetention: 'none' },
+            {
+              documentLength: applied.source.length,
+              seed: definitionSeed(fragment.definitions, fragment.footnotes, 0),
+              nextId: () => nextNodeId++
+            }
+          )
+        : null;
+      if (prefixFragment !== null) {
+        prefix = reconcileTree(
+          Object.freeze({ ...oldDocument.tree, children: Object.freeze(oldPrefix) }),
+          prefixFragment.tree,
+          oldSource,
+          applied.source,
+          applied.edits,
+          reconciliationWork,
+          summaryCache
+        ).children;
+      }
       const oldSuffixTree: MarkdownDocumentNode = Object.freeze({
         ...oldDocument.tree,
         children: Object.freeze(oldDocument.tree.children.slice(oldPrefix.length))
@@ -912,9 +938,11 @@ export function createMarkdownDocumentSession(
         span: freezeSpan(0, applied.source.length),
         children: Object.freeze([...prefix, ...reconciledSuffix.children])
       });
-      const prefixNodes = blockPrefixData.nodeCounts[oldPrefixLength] ?? 0;
-      const prefixHeight = blockPrefixData.heights[oldPrefixLength] ?? 0;
-      const suffixSummaries = tree.children.slice(oldPrefixLength).map((block) => (
+      const prefixData = prefixFragment === null ? blockPrefixData
+        : topLevelPrefixData(Object.freeze({ ...tree, children: prefix }), summaryCache, reconciliationWork);
+      const prefixNodes = prefixData.nodeCounts[prefix.length] ?? 0;
+      const prefixHeight = prefixData.heights[prefix.length] ?? 0;
+      const suffixSummaries = reconciledSuffix.children.map((block) => (
         summarizeMarkdownTree(block, summaryCache, reconciliationWork)
       ));
       const suffixDefinitions = suffixSummaries.flatMap((summary) => summary.definitions);
@@ -922,13 +950,15 @@ export function createMarkdownDocumentSession(
       const suffixHeight = suffixSummaries.reduce((height, summary) => Math.max(height, summary.height), 0);
       const prefixDefinitions = oldDocument.definitions.filter((definition) => definition.span.end <= oldStart);
       const prefixFootnotes = oldDocument.footnotes.filter((footnote) => footnote.span.end <= oldStart);
-      summaryCache.set(tree, Object.freeze({
-        nodeCount: 1 + prefixNodes + suffixSummaries.reduce((count, summary) => count + summary.nodeCount, 0),
-        height: 1 + Math.max(prefixHeight, suffixHeight),
-        definitions: Object.freeze([...prefixDefinitions, ...suffixDefinitions]),
-        footnotes: Object.freeze([...prefixFootnotes, ...suffixFootnotes])
-      }));
-      const prefixDiagnostics = oldDocument.diagnostics
+      if (prefixFragment === null) {
+        summaryCache.set(tree, Object.freeze({
+          nodeCount: 1 + prefixNodes + suffixSummaries.reduce((count, summary) => count + summary.nodeCount, 0),
+          height: 1 + Math.max(prefixHeight, suffixHeight),
+          definitions: Object.freeze([...prefixDefinitions, ...suffixDefinitions]),
+          footnotes: Object.freeze([...prefixFootnotes, ...suffixFootnotes])
+        }));
+      }
+      const prefixDiagnostics = prefixFragment?.diagnostics ?? oldDocument.diagnostics
         .filter((diagnostic) => diagnostic.span.end <= oldStart)
         .map((diagnostic) => mapOldValue(
           diagnostic,
@@ -950,25 +980,26 @@ export function createMarkdownDocumentSession(
         summaryCache,
         reconciliationWork
       );
-      blockPrefixData = extendTopLevelPrefixData(blockPrefixData, oldPrefixLength, suffixSummaries);
+      blockPrefixData = extendTopLevelPrefixData(prefixData, prefix.length, suffixSummaries);
       currentSource = applied.source;
       revision += 1;
-      const reusedNodes = prefixNodes + reconciliationWork.reusedNodes;
-      const parsedCodeUnits = applied.source.length - newStart;
+      const reusedNodes = (prefixFragment === null ? prefixNodes : -1) + reconciliationWork.reusedNodes;
+      const parsedStart = prefixFragment === null ? newStart : 0;
+      const parsedCodeUnits = applied.source.length - parsedStart;
       const sourceIndexCodeUnits = sourceIndex === undefined
         ? fragment.metadata.sourceCodeUnits
-        : markdownSourceIndexScanLength(sourceIndex);
+        : markdownSourceIndexScanLength(sourceIndex) + (prefixFragment?.metadata.sourceCodeUnits ?? 0);
       return Object.freeze({
         previousRevision,
         snapshot: makeSnapshot(),
         changedOldSpan: applied.changedOldSpan,
         changedNewSpan: applied.changedNewSpan,
-        parsedSpan: freezeSpan(newStart, applied.source.length),
+        parsedSpan: freezeSpan(parsedStart, applied.source.length),
         codeUnitDelta: applied.codeUnitDelta,
         instrumentation: Object.freeze({
           parsedCodeUnits,
           sourceIndexCodeUnits,
-          parsedNodes: fragment.metadata.nodeCount,
+          parsedNodes: fragment.metadata.nodeCount + (prefixFragment?.metadata.nodeCount ?? 0),
           reconciledNodes: reconciliationWork.visitedNodes,
           comparedCodeUnits: reconciliationWork.comparedCodeUnits,
           sourceTraversalCodeUnits: applied.source.length
@@ -976,7 +1007,7 @@ export function createMarkdownDocumentSession(
             + sourceIndexCodeUnits
             + reconciliationWork.comparedCodeUnits,
           reusedNodes,
-          fullParse: newStart === 0
+          fullParse: parsedStart === 0
         })
       });
     },

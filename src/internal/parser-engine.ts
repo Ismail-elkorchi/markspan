@@ -421,7 +421,8 @@ export function convertMarkdown(source: string, options: ConvertOptions): Conver
     source,
     rootLineViews(lines),
     options.dialect,
-    options.extensions,
+    options.sourceOffset === 0 ? options.extensions
+      : new Set([...options.extensions].filter((extension) => extension !== 'frontMatter')),
     options.seed
   );
   return new Emitter(parsed, options).emit();
